@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback } from 'react';
 import { View, Pressable, StyleSheet, Text, Platform } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
@@ -23,14 +23,12 @@ export default function ClickWheel({ size = 280, onAction }: Props) {
   const dragging = useSharedValue(0);
   const ringScale = useSharedValue(1);
 
-  const lastTickCount = useRef(0);
+  const center = size / 2;
+  const innerSize = size * 0.42;
 
   const triggerHaptic = useCallback(() => {
     Haptics.selectionAsync().catch(() => {});
   }, []);
-
-  const center = size / 2;
-  const innerSize = size * 0.42;
 
   const handleAngleChange = useCallback((deltaTicks: number) => {
     if (deltaTicks === 0) return;

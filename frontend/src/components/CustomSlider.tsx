@@ -22,12 +22,12 @@ export default function CustomSlider({
   min, max, value, step = 0, label, unit, onChange, formatValue, testID, logScale = false,
 }: Props) {
   const [width, setWidth] = useState(0);
-  const widthRef = useRef(0);
+  const widthSv = useSharedValue(0);
 
   const onLayout = (e: LayoutChangeEvent) => {
     const w = e.nativeEvent.layout.width;
     setWidth(w);
-    widthRef.current = w;
+    widthSv.value = w;
   };
 
   const ratio = (v: number) => {
@@ -61,14 +61,14 @@ export default function CustomSlider({
   const pan = Gesture.Pan()
     .onUpdate((e) => {
       'worklet';
-      const w = widthRef.current || 1;
+      const w = widthSv.value || 1;
       const r = Math.max(0, Math.min(1, e.x / w));
       progress.value = r;
       runOnJS(setValueFromRatio)(r);
     })
     .onBegin((e) => {
       'worklet';
-      const w = widthRef.current || 1;
+      const w = widthSv.value || 1;
       const r = Math.max(0, Math.min(1, e.x / w));
       progress.value = r;
       runOnJS(setValueFromRatio)(r);

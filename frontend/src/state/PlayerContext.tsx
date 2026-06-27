@@ -12,29 +12,30 @@ export type Track = {
 };
 
 export type FolderInfo = {
-  path: string; // unique key
+  path: string;
   name: string;
   trackCount: number;
   tracks: Track[];
 };
 
 type PlayerState = {
-  // queue/track
   queue: Track[];
   currentIndex: number;
   isPlaying: boolean;
   isLoading: boolean;
   positionSec: number;
   durationSec: number;
-  volume: number; // 0..1
+  volume: number;
   shuffle: boolean;
   repeat: 'off' | 'one' | 'all';
-  // folders cache
   folders: FolderInfo[];
-  recentFolders: string[]; // paths
+  recentFolders: string[];
   currentFolderPath: string | null;
-  // permissions
   permissionGranted: boolean;
+  // new
+  sleepTimerEnd: number | null; // ms epoch
+  sleepRemainingSec: number | null;
+  gaplessEnabled: boolean;
 };
 
 type PlayerActions = {
@@ -49,15 +50,20 @@ type PlayerActions = {
   toggleShuffle: () => void;
   cycleRepeat: () => void;
   setPermissionGranted: (granted: boolean) => void;
+  setSleepTimer: (minutes: number | null) => void;
+  setGapless: (v: boolean) => void;
 };
 
 const PlayerCtx = createContext<(PlayerState & PlayerActions) | null>(null);
 
 const RECENT_KEY = '@chromeamp/recent_folders';
 const VOLUME_KEY = '@chromeamp/volume';
+const GAPLESS_KEY = '@chromeamp/gapless';
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const playerRef = useRef<AudioPlayer | null>(null);
+  const nextPlayerRef = useRef<AudioPlayer | null>(null);
+  const nextPreloadedFor = useRef<string | null>(null);
   const [queue, setQueue] = useState<Track[]>([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -71,8 +77,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [recentFolders, setRecentFolders] = useState<string[]>([]);
   const [currentFolderPath, setCurrentFolderPath] = useState<string | null>(null);
   const [permissionGranted, setPermissionGranted] = useState(false);
+  const [sleepTimerEnd, setSleepTimerEnd] = useState<number | null>(null);
+  const [sleepRemainingSec, setSleepRemainingSec] = useState<number | null>(null);
+  const [gaplessEnabled, setGaplessEnabled] = useState(true);
 
-  // Init audio mode + restore persisted prefs
   useEffect(() => {
     setAudioModeAsync({
       playsInSilentMode: true,
@@ -84,10 +92,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (v != null) setVolumeState(parseFloat(v));
       const r = await AsyncStorage.getItem(RECENT_KEY);
       if (r) try { setRecentFolders(JSON.parse(r)); } catch {}
+      const g = await AsyncStorage.getItem(GAPLESS_KEY);
+      if (g != null) setGaplessEnabled(g === 'true');
     })();
   }, []);
 
-  // Position polling
+  // Position polling + sleep timer countdown + gapless preload trigger
   useEffect(() => {
     const id = setInterval(() => {
       const p = playerRef.current;
@@ -96,28 +106,52 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         if (p.duration && Number.isFinite(p.duration)) setDurationSec(p.duration);
         setIsPlaying(!!p.playing);
       }
+      if (sleepTimerEnd != null) {
+        const remaining = Math.max(0, Math.ceil((sleepTimerEnd - Date.now()) / 1000));
+        setSleepRemainingSec(remaining);
+        if (remaining <= 0) {
+          try { playerRef.current?.pause(); } catch {}
+          setIsPlaying(false);
+          setSleepTimerEnd(null);
+          setSleepRemainingSec(null);
+        }
+      } else if (sleepRemainingSec != null) {
+        setSleepRemainingSec(null);
+      }
+      // Gapless preload ~4s before track end
+      if (gaplessEnabled && p && durationSec > 5 && repeat !== 'one') {
+        const remain = durationSec - (p.currentTime ?? 0);
+        const nextIdx = (currentIndex + 1) % queue.length;
+        const nextTrack = queue[nextIdx];
+        if (remain > 0 && remain < 4 && nextTrack && nextPreloadedFor.current !== nextTrack.id) {
+          try {
+            if (nextPlayerRef.current) { try { nextPlayerRef.current.remove(); } catch {} }
+            const np = createAudioPlayer({ uri: nextTrack.uri });
+            np.volume = 0;
+            nextPlayerRef.current = np;
+            nextPreloadedFor.current = nextTrack.id;
+          } catch {}
+        }
+      }
     }, 500);
     return () => clearInterval(id);
-  }, []);
+  }, [sleepTimerEnd, sleepRemainingSec, gaplessEnabled, durationSec, currentIndex, queue, repeat]);
 
-  // Auto-advance on finish
   useEffect(() => {
     const p = playerRef.current;
     if (!p) return;
     const sub = p.addListener('playbackStatusUpdate', (status: any) => {
-      if (status?.didJustFinish) {
-        handleTrackEnd();
-      }
+      if (status?.didJustFinish) handleTrackEnd();
     });
     return () => { sub?.remove?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentIndex, queue.length, repeat, shuffle]);
+  }, [currentIndex, queue.length, repeat, shuffle, gaplessEnabled]);
 
   const persistRecent = useCallback(async (list: string[]) => {
     await AsyncStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 10)));
   }, []);
 
-  const setupPlayer = useCallback((uri: string) => {
+  const setupPlayer = useCallback((uri: string): AudioPlayer => {
     try { playerRef.current?.remove(); } catch {}
     const p = createAudioPlayer({ uri });
     p.volume = volume;
@@ -129,38 +163,46 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     if (idx < 0 || idx >= list.length) return;
     setIsLoading(true);
     const t = list[idx];
-    const p = setupPlayer(t.uri);
+
+    // Try to use the preloaded next-track player for gapless transitions
+    let p: AudioPlayer;
+    if (gaplessEnabled && nextPlayerRef.current && nextPreloadedFor.current === t.id) {
+      try { playerRef.current?.remove(); } catch {}
+      p = nextPlayerRef.current;
+      p.volume = volume;
+      playerRef.current = p;
+      nextPlayerRef.current = null;
+      nextPreloadedFor.current = null;
+    } else {
+      p = setupPlayer(t.uri);
+    }
     setCurrentIndex(idx);
     setPositionSec(0);
     setDurationSec(t.duration ?? 0);
     try { p.play(); setIsPlaying(true); } catch {}
     setIsLoading(false);
-  }, [setupPlayer]);
+  }, [setupPlayer, gaplessEnabled, volume]);
 
   const handleTrackEnd = useCallback(() => {
     if (repeat === 'one') {
       playTrackAtIndex(currentIndex, queue);
       return;
     }
-    let next = currentIndex + 1;
-    if (shuffle && queue.length > 1) {
-      next = Math.floor(Math.random() * queue.length);
-    }
-    if (next >= queue.length) {
-      if (repeat === 'all') next = 0;
+    let n = currentIndex + 1;
+    if (shuffle && queue.length > 1) n = Math.floor(Math.random() * queue.length);
+    if (n >= queue.length) {
+      if (repeat === 'all') n = 0;
       else { setIsPlaying(false); return; }
     }
-    playTrackAtIndex(next, queue);
+    playTrackAtIndex(n, queue);
   }, [repeat, shuffle, currentIndex, queue, playTrackAtIndex]);
 
   const loadFolders = useCallback(async () => {
     try {
-      // Lazy-load to keep web bundle happy
       const MediaLibrary = await import('expo-media-library');
       const perm = await MediaLibrary.requestPermissionsAsync();
       if (!perm.granted) { setPermissionGranted(false); return; }
       setPermissionGranted(true);
-      // Get all audio assets — paginate
       let all: any[] = [];
       let after: string | undefined;
       for (let i = 0; i < 20; i++) {
@@ -174,23 +216,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         if (!page.hasNextPage) break;
         after = page.endCursor;
       }
-      // Group by folder
       const map = new Map<string, FolderInfo>();
       for (const a of all) {
         const uri: string = a.uri || a.localUri || '';
         const filename: string = a.filename || 'Unknown';
-        // Derive folder path from filename / uri path
-        // expo-media-library returns content:// URIs on android; use albumId / fallback to "Music"
         const folderPath: string = a.albumId ? `album:${a.albumId}` : 'all';
         const folderName: string = a.albumId ? (a.album || 'Album') : 'All Music';
-        const track: Track = {
-          id: a.id,
-          uri,
-          filename,
-          duration: a.duration,
-          folder: folderPath,
-          folderName,
-        };
+        const track: Track = { id: a.id, uri, filename, duration: a.duration, folder: folderPath, folderName };
         if (!map.has(folderPath)) {
           map.set(folderPath, { path: folderPath, name: folderName, trackCount: 0, tracks: [] });
         }
@@ -198,7 +230,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         f.tracks.push(track);
         f.trackCount = f.tracks.length;
       }
-      // Resolve album names where missing
       try {
         const albums = await MediaLibrary.getAlbumsAsync();
         for (const al of albums) {
@@ -274,15 +305,32 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const toggleShuffle = useCallback(() => setShuffle((s) => !s), []);
   const cycleRepeat = useCallback(() => setRepeat((r) => r === 'off' ? 'all' : r === 'all' ? 'one' : 'off'), []);
 
+  const setSleepTimer = useCallback((minutes: number | null) => {
+    if (minutes == null || minutes <= 0) {
+      setSleepTimerEnd(null);
+      setSleepRemainingSec(null);
+      return;
+    }
+    setSleepTimerEnd(Date.now() + minutes * 60 * 1000);
+    setSleepRemainingSec(minutes * 60);
+  }, []);
+
+  const setGapless = useCallback((v: boolean) => {
+    setGaplessEnabled(v);
+    AsyncStorage.setItem(GAPLESS_KEY, String(v)).catch(() => {});
+  }, []);
+
   const value = useMemo(() => ({
     queue, currentIndex, isPlaying, isLoading, positionSec, durationSec,
     volume, shuffle, repeat, folders, recentFolders, currentFolderPath, permissionGranted,
+    sleepTimerEnd, sleepRemainingSec, gaplessEnabled,
     loadFolders, playFolder, playTrack, togglePlay, next, prev, seekTo, setVolume,
-    toggleShuffle, cycleRepeat, setPermissionGranted,
+    toggleShuffle, cycleRepeat, setPermissionGranted, setSleepTimer, setGapless,
   }), [queue, currentIndex, isPlaying, isLoading, positionSec, durationSec, volume, shuffle,
        repeat, folders, recentFolders, currentFolderPath, permissionGranted,
+       sleepTimerEnd, sleepRemainingSec, gaplessEnabled,
        loadFolders, playFolder, playTrack, togglePlay, next, prev, seekTo, setVolume,
-       toggleShuffle, cycleRepeat]);
+       toggleShuffle, cycleRepeat, setSleepTimer, setGapless]);
 
   return <PlayerCtx.Provider value={value}>{children}</PlayerCtx.Provider>;
 }

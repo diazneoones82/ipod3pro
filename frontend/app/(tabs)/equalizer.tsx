@@ -12,11 +12,13 @@ import FrequencyGraph from '@/src/components/FrequencyGraph';
 import CustomSlider from '@/src/components/CustomSlider';
 import { useEQ } from '@/src/state/EQContext';
 import { FILTER_TYPE_LABEL, type FilterType, PRESETS } from '@/src/utils/eq-parser';
+import { useRouter } from 'expo-router';
 
 const FILTER_TYPES: FilterType[] = ['PK', 'LSC', 'HSC', 'LP', 'HP', 'NO', 'BP', 'AP'];
 
 export default function EqualizerScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const eq = useEQ();
   const [toast, setToast] = useState<string | null>(null);
   const [filterPickerForId, setFilterPickerForId] = useState<string | null>(null);
@@ -75,6 +77,14 @@ export default function EqualizerScreen() {
             <Text style={styles.title}>Parametric EQ</Text>
             <Text style={styles.subtitle}>Equalizer APO compatible</Text>
           </View>
+          <Pressable
+            testID="open-discover-btn"
+            onPress={() => router.push('/discover')}
+            style={styles.discoverBtn}
+          >
+            <Ionicons name="compass" size={14} color={COLORS.brand} />
+            <Text style={styles.discoverBtnText}>Discover</Text>
+          </Pressable>
           <View style={styles.enableRow}>
             <Text style={styles.enableLabel}>{eq.enabled ? 'ON' : 'OFF'}</Text>
             <Switch
@@ -230,6 +240,8 @@ const styles = StyleSheet.create({
   title: { color: COLORS.onSurface, fontSize: 28, fontWeight: '800', letterSpacing: -0.5 },
   subtitle: { color: COLORS.onSurfaceSecondary, fontSize: 12, marginTop: 2 },
   enableRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  discoverBtn: { flexDirection: 'row', gap: 5, alignItems: 'center', backgroundColor: COLORS.brandTertiary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: RADIUS.pill, marginRight: 8 },
+  discoverBtnText: { color: COLORS.brand, fontSize: 12, fontWeight: '700' },
   enableLabel: { color: COLORS.onSurfaceSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 1.2 },
   sectionLabel: { color: COLORS.onSurfaceSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 1.4, marginTop: SPACING.xl, marginBottom: SPACING.sm, paddingHorizontal: SPACING.lg },
   presetsRow: { paddingHorizontal: SPACING.lg, gap: 8, paddingBottom: 4 },
