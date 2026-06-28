@@ -115,8 +115,8 @@ export default function SettingsScreen() {
         <View style={styles.row}>
           <View style={styles.iconBox}><Ionicons name="information-circle" size={18} color={COLORS.brand} /></View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.rowTitle}>ChromeAmp</Text>
-            <Text style={styles.rowMeta}>v1.1.0 · iPod-inspired audiophile player</Text>
+            <Text style={styles.rowTitle}>Shuffle IMusic</Text>
+            <Text style={styles.rowMeta}>v1.0.0 · iPod-inspired audiophile player</Text>
           </View>
         </View>
 

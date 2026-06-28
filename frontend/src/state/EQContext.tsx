@@ -21,7 +21,7 @@ type EQContextValue = {
 };
 
 const EQCtx = createContext<EQContextValue | null>(null);
-const STORAGE_KEY = '@chromeamp/eq_config_v1';
+const STORAGE_KEY = '@shuffleimusic/eq_config_v1';
 
 export function EQProvider({ children }: { children: React.ReactNode }) {
   const [enabled, setEnabledState] = useState(true);

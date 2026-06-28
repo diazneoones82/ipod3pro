@@ -48,7 +48,7 @@ export default function FoldersScreen() {
       {!player.permissionGranted && !loading && (
         <GlassCard style={{ marginTop: SPACING.lg, marginHorizontal: SPACING.lg }}>
           <Text style={styles.permTitle}>Permission required</Text>
-          <Text style={styles.permBody}>ChromeAmp needs access to read audio files on your device.</Text>
+          <Text style={styles.permBody}>Shuffle IMusic needs access to read audio files on your device.</Text>
           <Pressable
             testID="grant-permission-btn"
             onPress={async () => {

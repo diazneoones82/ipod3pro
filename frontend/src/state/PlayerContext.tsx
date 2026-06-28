@@ -9,6 +9,7 @@ export type Track = {
   duration?: number; // seconds
   folder: string; // parent folder path
   folderName: string;
+  artworkUri?: string;
 };
 
 export type FolderInfo = {
@@ -26,8 +27,10 @@ type PlayerState = {
   positionSec: number;
   durationSec: number;
   volume: number;
+  muted: boolean;
   shuffle: boolean;
   repeat: 'off' | 'one' | 'all';
+  favorites: string[];
   folders: FolderInfo[];
   recentFolders: string[];
   currentFolderPath: string | null;
@@ -42,13 +45,17 @@ type PlayerActions = {
   loadFolders: () => Promise<void>;
   playFolder: (folderPath: string, startIndex?: number) => Promise<void>;
   playTrack: (track: Track) => Promise<void>;
+  playQueueIndex: (idx: number) => Promise<void>;
   togglePlay: () => void;
+  stop: () => void;
   next: () => Promise<void>;
   prev: () => Promise<void>;
   seekTo: (sec: number) => void;
   setVolume: (vol: number) => void;
+  toggleMute: () => void;
   toggleShuffle: () => void;
   cycleRepeat: () => void;
+  toggleFavorite: (trackId: string) => void;
   setPermissionGranted: (granted: boolean) => void;
   setSleepTimer: (minutes: number | null) => void;
   setGapless: (v: boolean) => void;
@@ -56,14 +63,41 @@ type PlayerActions = {
 
 const PlayerCtx = createContext<(PlayerState & PlayerActions) | null>(null);
 
-const RECENT_KEY = '@chromeamp/recent_folders';
-const VOLUME_KEY = '@chromeamp/volume';
-const GAPLESS_KEY = '@chromeamp/gapless';
+const RECENT_KEY = '@shuffleimusic/recent_folders';
+const VOLUME_KEY = '@shuffleimusic/volume';
+const GAPLESS_KEY = '@shuffleimusic/gapless';
+const FAVORITES_KEY = '@shuffleimusic/favorites';
+
+function parseFolder(uri: string, fallbackFolder = 'unknown', fallbackName = 'Unknown') {
+  let folderPath = fallbackFolder;
+  let folderName = fallbackName;
+  if (uri.startsWith('file://')) {
+    const parts = uri.replace('file://', '').split('/');
+    parts.pop();
+    folderPath = parts.join('/') || fallbackFolder;
+    folderName = parts[parts.length - 1] || fallbackName;
+  } else if (uri.includes('/')) {
+    const parts = uri.split('/');
+    parts.pop();
+    folderPath = parts.join('/') || fallbackFolder;
+    folderName = parts[parts.length - 1] || fallbackName;
+  }
+  return { folderPath, folderName };
+}
+
+function stripExt(name: string) {
+  return name.replace(/\.[^.]+$/, '').toLowerCase();
+}
+
+function coverKey(folderPath: string, name: string) {
+  return `${folderPath}/${stripExt(name)}`;
+}
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const playerRef = useRef<AudioPlayer | null>(null);
   const nextPlayerRef = useRef<AudioPlayer | null>(null);
   const nextPreloadedFor = useRef<string | null>(null);
+  const activePlayerIdRef = useRef(0);
   const [queue, setQueue] = useState<Track[]>([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -71,8 +105,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [positionSec, setPositionSec] = useState(0);
   const [durationSec, setDurationSec] = useState(0);
   const [volume, setVolumeState] = useState(0.8);
+  const [muted, setMuted] = useState(false);
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState<'off' | 'one' | 'all'>('off');
+  const [favorites, setFavorites] = useState<string[]>([]);
   const [folders, setFolders] = useState<FolderInfo[]>([]);
   const [recentFolders, setRecentFolders] = useState<string[]>([]);
   const [currentFolderPath, setCurrentFolderPath] = useState<string | null>(null);
@@ -94,6 +130,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (r) try { setRecentFolders(JSON.parse(r)); } catch {}
       const g = await AsyncStorage.getItem(GAPLESS_KEY);
       if (g != null) setGaplessEnabled(g === 'true');
+      const fav = await AsyncStorage.getItem(FAVORITES_KEY);
+      if (fav) try { setFavorites(JSON.parse(fav)); } catch {}
     })();
   }, []);
 
@@ -111,6 +149,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         setSleepRemainingSec(remaining);
         if (remaining <= 0) {
           try { playerRef.current?.pause(); } catch {}
+          try { nextPlayerRef.current?.pause(); } catch {}
+          try { nextPlayerRef.current?.remove(); } catch {}
+          nextPlayerRef.current = null;
+          nextPreloadedFor.current = null;
           setIsPlaying(false);
           setSleepTimerEnd(null);
           setSleepRemainingSec(null);
@@ -125,7 +167,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         const nextTrack = queue[nextIdx];
         if (remain > 0 && remain < 4 && nextTrack && nextPreloadedFor.current !== nextTrack.id) {
           try {
-            if (nextPlayerRef.current) { try { nextPlayerRef.current.remove(); } catch {} }
+            if (nextPlayerRef.current) {
+              try { nextPlayerRef.current.pause(); } catch {}
+              try { nextPlayerRef.current.remove(); } catch {}
+            }
             const np = createAudioPlayer({ uri: nextTrack.uri });
             np.volume = 0;
             nextPlayerRef.current = np;
@@ -140,7 +185,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const p = playerRef.current;
     if (!p) return;
+    const playerId = activePlayerIdRef.current;
     const sub = p.addListener('playbackStatusUpdate', (status: any) => {
+      if (playerRef.current !== p || activePlayerIdRef.current !== playerId) return;
       if (status?.didJustFinish) handleTrackEnd();
     });
     return () => { sub?.remove?.(); };
@@ -151,37 +198,60 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     await AsyncStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 10)));
   }, []);
 
+  const disposePlayer = useCallback((p: AudioPlayer | null) => {
+    if (!p) return;
+    try { p.pause(); } catch {}
+    try { p.seekTo(0); } catch {}
+    try { p.remove(); } catch {}
+  }, []);
+
+  const clearPreload = useCallback(() => {
+    disposePlayer(nextPlayerRef.current);
+    nextPlayerRef.current = null;
+    nextPreloadedFor.current = null;
+  }, [disposePlayer]);
+
   const setupPlayer = useCallback((uri: string): AudioPlayer => {
-    try { playerRef.current?.remove(); } catch {}
+    disposePlayer(playerRef.current);
+    playerRef.current = null;
     const p = createAudioPlayer({ uri });
-    p.volume = volume;
+    p.volume = muted ? 0 : volume;
     playerRef.current = p;
     return p;
-  }, [volume]);
+  }, [disposePlayer, muted, volume]);
 
   const playTrackAtIndex = useCallback(async (idx: number, list: Track[]) => {
     if (idx < 0 || idx >= list.length) return;
+    const playerId = activePlayerIdRef.current + 1;
+    activePlayerIdRef.current = playerId;
     setIsLoading(true);
     const t = list[idx];
 
     // Try to use the preloaded next-track player for gapless transitions
     let p: AudioPlayer;
     if (gaplessEnabled && nextPlayerRef.current && nextPreloadedFor.current === t.id) {
-      try { playerRef.current?.remove(); } catch {}
+      disposePlayer(playerRef.current);
+      playerRef.current = null;
       p = nextPlayerRef.current;
-      p.volume = volume;
+      p.volume = muted ? 0 : volume;
       playerRef.current = p;
       nextPlayerRef.current = null;
       nextPreloadedFor.current = null;
     } else {
+      clearPreload();
       p = setupPlayer(t.uri);
+    }
+    if (activePlayerIdRef.current !== playerId) {
+      disposePlayer(p);
+      setIsLoading(false);
+      return;
     }
     setCurrentIndex(idx);
     setPositionSec(0);
     setDurationSec(t.duration ?? 0);
     try { p.play(); setIsPlaying(true); } catch {}
     setIsLoading(false);
-  }, [setupPlayer, gaplessEnabled, volume]);
+  }, [clearPreload, disposePlayer, setupPlayer, gaplessEnabled, muted, volume]);
 
   const handleTrackEnd = useCallback(() => {
     if (repeat === 'one') {
@@ -216,13 +286,41 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         if (!page.hasNextPage) break;
         after = page.endCursor;
       }
+      const imageByExactName = new Map<string, string>();
+      const imageByFolderCover = new Map<string, string>();
+      after = undefined;
+      for (let i = 0; i < 12; i++) {
+        const page: any = await MediaLibrary.getAssetsAsync({
+          mediaType: MediaLibrary.MediaType.photo,
+          first: 200,
+          after,
+          sortBy: [MediaLibrary.SortBy.creationTime],
+        });
+        for (const img of page.assets || []) {
+          const uri: string = img.uri || img.localUri || '';
+          const filename: string = img.filename || '';
+          if (!uri || !filename || !/\.(png|jpe?g|webp)$/i.test(filename)) continue;
+          const { folderPath } = parseFolder(uri);
+          imageByExactName.set(coverKey(folderPath, filename), uri);
+          if (/^(cover|folder|album|artwork|front)$/i.test(stripExt(filename))) {
+            imageByFolderCover.set(folderPath, uri);
+          }
+        }
+        if (!page.hasNextPage) break;
+        after = page.endCursor;
+      }
       const map = new Map<string, FolderInfo>();
       for (const a of all) {
         const uri: string = a.uri || a.localUri || '';
         const filename: string = a.filename || 'Unknown';
-        const folderPath: string = a.albumId ? `album:${a.albumId}` : 'all';
-        const folderName: string = a.albumId ? (a.album || 'Album') : 'All Music';
-        const track: Track = { id: a.id, uri, filename, duration: a.duration, folder: folderPath, folderName };
+        let { folderPath, folderName } = parseFolder(uri);
+        // Fallback to album grouping if we can't parse the path
+        if (folderPath === 'unknown' && a.albumId) {
+          folderPath = `album:${a.albumId}`;
+          folderName = a.album || 'Album';
+        }
+        const artworkUri = imageByExactName.get(coverKey(folderPath, filename)) ?? imageByFolderCover.get(folderPath);
+        const track: Track = { id: a.id, uri, filename, duration: a.duration, folder: folderPath, folderName, artworkUri };
         if (!map.has(folderPath)) {
           map.set(folderPath, { path: folderPath, name: folderName, trackCount: 0, tracks: [] });
         }
@@ -230,16 +328,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         f.tracks.push(track);
         f.trackCount = f.tracks.length;
       }
-      try {
-        const albums = await MediaLibrary.getAlbumsAsync();
-        for (const al of albums) {
-          const key = `album:${al.id}`;
-          if (map.has(key)) {
-            const f = map.get(key)!;
-            f.name = al.title || f.name;
-          }
-        }
-      } catch {}
       const list = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
       setFolders(list);
     } catch (e) {
@@ -267,12 +355,26 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     await playTrackAtIndex(idx >= 0 ? idx : 0, list);
   }, [folders, playTrackAtIndex]);
 
+  const playQueueIndex = useCallback(async (idx: number) => {
+    await playTrackAtIndex(idx, queue);
+  }, [playTrackAtIndex, queue]);
+
   const togglePlay = useCallback(() => {
     const p = playerRef.current;
     if (!p) return;
     if (p.playing) { p.pause(); setIsPlaying(false); }
     else { p.play(); setIsPlaying(true); }
   }, []);
+
+  const stop = useCallback(() => {
+    activePlayerIdRef.current += 1;
+    clearPreload();
+    const p = playerRef.current;
+    if (!p) return;
+    try { p.pause(); p.seekTo(0); } catch {}
+    setIsPlaying(false);
+    setPositionSec(0);
+  }, [clearPreload]);
 
   const next = useCallback(async () => {
     if (queue.length === 0) return;
@@ -298,12 +400,27 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const setVolume = useCallback((vol: number) => {
     const v = Math.max(0, Math.min(1, vol));
     setVolumeState(v);
-    if (playerRef.current) playerRef.current.volume = v;
+    if (playerRef.current) playerRef.current.volume = muted ? 0 : v;
     AsyncStorage.setItem(VOLUME_KEY, String(v)).catch(() => {});
-  }, []);
+  }, [muted]);
+
+  const toggleMute = useCallback(() => {
+    setMuted((m) => {
+      const nextMuted = !m;
+      if (playerRef.current) playerRef.current.volume = nextMuted ? 0 : volume;
+      return nextMuted;
+    });
+  }, [volume]);
 
   const toggleShuffle = useCallback(() => setShuffle((s) => !s), []);
   const cycleRepeat = useCallback(() => setRepeat((r) => r === 'off' ? 'all' : r === 'all' ? 'one' : 'off'), []);
+  const toggleFavorite = useCallback((trackId: string) => {
+    setFavorites((list) => {
+      const next = list.includes(trackId) ? list.filter((id) => id !== trackId) : [trackId, ...list];
+      AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, []);
 
   const setSleepTimer = useCallback((minutes: number | null) => {
     if (minutes == null || minutes <= 0) {
@@ -316,21 +433,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setGapless = useCallback((v: boolean) => {
+    if (!v) clearPreload();
     setGaplessEnabled(v);
     AsyncStorage.setItem(GAPLESS_KEY, String(v)).catch(() => {});
-  }, []);
+  }, [clearPreload]);
 
   const value = useMemo(() => ({
     queue, currentIndex, isPlaying, isLoading, positionSec, durationSec,
-    volume, shuffle, repeat, folders, recentFolders, currentFolderPath, permissionGranted,
+    volume, muted, shuffle, repeat, favorites, folders, recentFolders, currentFolderPath, permissionGranted,
     sleepTimerEnd, sleepRemainingSec, gaplessEnabled,
-    loadFolders, playFolder, playTrack, togglePlay, next, prev, seekTo, setVolume,
-    toggleShuffle, cycleRepeat, setPermissionGranted, setSleepTimer, setGapless,
-  }), [queue, currentIndex, isPlaying, isLoading, positionSec, durationSec, volume, shuffle,
-       repeat, folders, recentFolders, currentFolderPath, permissionGranted,
+    loadFolders, playFolder, playTrack, playQueueIndex, togglePlay, stop, next, prev, seekTo, setVolume,
+    toggleMute, toggleShuffle, cycleRepeat, toggleFavorite, setPermissionGranted, setSleepTimer, setGapless,
+  }), [queue, currentIndex, isPlaying, isLoading, positionSec, durationSec, volume, muted, shuffle,
+       repeat, favorites, folders, recentFolders, currentFolderPath, permissionGranted,
        sleepTimerEnd, sleepRemainingSec, gaplessEnabled,
-       loadFolders, playFolder, playTrack, togglePlay, next, prev, seekTo, setVolume,
-       toggleShuffle, cycleRepeat, setSleepTimer, setGapless]);
+       loadFolders, playFolder, playTrack, playQueueIndex, togglePlay, stop, next, prev, seekTo, setVolume,
+       toggleMute, toggleShuffle, cycleRepeat, toggleFavorite, setSleepTimer, setGapless]);
 
   return <PlayerCtx.Provider value={value}>{children}</PlayerCtx.Provider>;
 }

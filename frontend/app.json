@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "ChromeAmp",
-    "slug": "frontend",
+    "name": "Shuffle IMusic",
+    "slug": "shuffle-imusic",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "chromeamp",
+    "scheme": "shuffleimusic",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "ios": {
@@ -24,10 +24,13 @@
       "permissions": [
         "android.permission.READ_MEDIA_AUDIO",
         "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.WAKE_LOCK",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.MODIFY_AUDIO_SETTINGS"
-      ]
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.ACCESS_MEDIA_LOCATION"
+      ],
+      "package": "com.shuffleimusic.player"
     },
     "web": {
       "bundler": "metro",
@@ -40,8 +43,8 @@
       [
         "expo-media-library",
         {
-          "photosPermission": "Allow ChromeAmp to access your media",
-          "savePhotosPermission": "Allow ChromeAmp to save media",
+          "photosPermission": "Allow Shuffle IMusic to access your media",
+          "savePhotosPermission": "Allow Shuffle IMusic to save media",
           "isAccessMediaLocationEnabled": true
         }
       ],

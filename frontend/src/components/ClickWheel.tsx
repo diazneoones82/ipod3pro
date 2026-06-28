@@ -8,16 +8,17 @@ import Animated, { useAnimatedStyle, useSharedValue, withTiming, runOnJS } from 
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '@/src/theme/tokens';
 
-export type ClickWheelAction = 'menu' | 'prev' | 'next' | 'play' | 'select' | 'scrollUp' | 'scrollDown';
+export type ClickWheelAction = 'menu' | 'prev' | 'next' | 'play' | 'stop' | 'select' | 'scrollUp' | 'scrollDown';
 
 type Props = {
   size?: number;
+  mode?: 'volume' | 'track';
   onAction: (a: ClickWheelAction) => void;
 };
 
 const TICK_STEP_RAD = (2 * Math.PI) / 36; // 36 ticks per full rotation = 10° per tick
 
-export default function ClickWheel({ size = 280, onAction }: Props) {
+export default function ClickWheel({ size = 280, mode = 'volume', onAction }: Props) {
   const accumAngle = useSharedValue(0);
   const lastAngle = useSharedValue(0);
   const dragging = useSharedValue(0);
@@ -27,7 +28,7 @@ export default function ClickWheel({ size = 280, onAction }: Props) {
   const innerSize = size * 0.42;
 
   const triggerHaptic = useCallback(() => {
-    Haptics.selectionAsync().catch(() => {});
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
   }, []);
 
   const handleAngleChange = useCallback((deltaTicks: number) => {
@@ -140,7 +141,7 @@ export default function ClickWheel({ size = 280, onAction }: Props) {
             <Text style={styles.dirLabel}>MENU</Text>
           </Pressable>
 
-          {/* Bottom - Play/Pause */}
+          {/* Bottom - Play/Pause. In track mode this plays only the highlighted song. */}
           <Pressable
             testID="click-wheel-play"
             onPress={() => fireAction('play')}
@@ -155,7 +156,7 @@ export default function ClickWheel({ size = 280, onAction }: Props) {
           <Pressable
             testID="click-wheel-prev"
             onPress={() => fireAction('prev')}
-            style={[styles.dirBtn, { left: 14, top: center - 12 }]}
+            style={[styles.dirBtn, styles.skipBtn, mode === 'volume' && styles.skipBtnMuted, { left: 14, top: center - 12 }]}
             hitSlop={10}
           >
             <Ionicons name="play-skip-back" size={16} color={COLORS.surface} />
@@ -165,7 +166,7 @@ export default function ClickWheel({ size = 280, onAction }: Props) {
           <Pressable
             testID="click-wheel-next"
             onPress={() => fireAction('next')}
-            style={[styles.dirBtn, { right: 14, top: center - 12 }]}
+            style={[styles.dirBtn, styles.skipBtn, mode === 'volume' && styles.skipBtnMuted, { right: 14, top: center - 12 }]}
             hitSlop={10}
           >
             <Ionicons name="play-skip-forward" size={16} color={COLORS.surface} />
@@ -229,6 +230,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 4,
     minWidth: 36,
+  },
+  skipBtn: {
+    opacity: 1,
+  },
+  skipBtnMuted: {
+    opacity: 0.35,
   },
   dirLabel: {
     color: COLORS.surface,
