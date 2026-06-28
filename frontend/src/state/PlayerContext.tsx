@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { setNativeEqSession } from '@/src/native/ShuffleEqualizer';
 
 export type Track = {
   id: string;
@@ -91,6 +92,15 @@ function stripExt(name: string) {
 
 function coverKey(folderPath: string, name: string) {
   return `${folderPath}/${stripExt(name)}`;
+}
+
+function syncPlayerEqSession(player: AudioPlayer | null) {
+  const sessionId = Number((player as any)?.audioSessionId ?? 0);
+  if (Number.isFinite(sessionId) && sessionId > 0) {
+    setNativeEqSession(sessionId).catch(() => {});
+  } else {
+    setNativeEqSession(0).catch(() => {});
+  }
 }
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
@@ -217,6 +227,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const p = createAudioPlayer({ uri });
     p.volume = muted ? 0 : volume;
     playerRef.current = p;
+    syncPlayerEqSession(p);
     return p;
   }, [disposePlayer, muted, volume]);
 
@@ -235,6 +246,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       p = nextPlayerRef.current;
       p.volume = muted ? 0 : volume;
       playerRef.current = p;
+      syncPlayerEqSession(p);
       nextPlayerRef.current = null;
       nextPreloadedFor.current = null;
     } else {
@@ -249,7 +261,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setCurrentIndex(idx);
     setPositionSec(0);
     setDurationSec(t.duration ?? 0);
-    try { p.play(); setIsPlaying(true); } catch {}
+    try {
+      p.play();
+      syncPlayerEqSession(p);
+      setTimeout(() => syncPlayerEqSession(p), 250);
+      setIsPlaying(true);
+    } catch {}
     setIsLoading(false);
   }, [clearPreload, disposePlayer, setupPlayer, gaplessEnabled, muted, volume]);
 

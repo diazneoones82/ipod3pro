@@ -69,6 +69,11 @@ export default function EqualizerScreen() {
     }
   }, [eq]);
 
+  const openDiscover = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    router.push('/discover');
+  }, [router]);
+
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
       <ScrollView contentContainerStyle={{ paddingBottom: 140 }} showsVerticalScrollIndicator={false}>
@@ -79,8 +84,9 @@ export default function EqualizerScreen() {
           </View>
           <Pressable
             testID="open-discover-btn"
-            onPress={() => router.push('/discover')}
+            onPress={openDiscover}
             style={styles.discoverBtn}
+            hitSlop={8}
           >
             <Ionicons name="compass" size={14} color={COLORS.brand} />
             <Text style={styles.discoverBtnText}>Discover</Text>

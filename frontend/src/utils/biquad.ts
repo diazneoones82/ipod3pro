@@ -134,3 +134,11 @@ export function computeFrequencyResponse(
   }
   return result;
 }
+
+export function computeGainAtFrequency(bands: EQBand[], preamp: number, hz: number): number {
+  const w = (2 * Math.PI * hz) / SAMPLE_RATE;
+  const enabledCoeffs = bands.filter((b) => b.enabled).map(biquadCoeffs);
+  let db = preamp;
+  for (const c of enabledCoeffs) db += bandMagDb(c, w);
+  return db;
+}

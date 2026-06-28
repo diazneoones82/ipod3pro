@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   type EQBand, type EQConfig, parseEqualizerApo, serializeEqualizerApo, PRESETS, createBand,
 } from '@/src/utils/eq-parser';
+import { syncNativeEq } from '@/src/native/ShuffleEqualizer';
 
 type EQContextValue = {
   enabled: boolean;
@@ -55,6 +56,10 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
       enabled, preamp, bands, selectedPreset,
     })).catch(() => {});
   }, [enabled, preamp, bands, selectedPreset]);
+
+  useEffect(() => {
+    syncNativeEq(enabled, preamp, bands).catch(() => {});
+  }, [enabled, preamp, bands]);
 
   const setEnabled = useCallback((v: boolean) => setEnabledState(v), []);
   const setPreamp = useCallback((v: number) => { setPreampState(v); setSelectedPreset(null); }, []);

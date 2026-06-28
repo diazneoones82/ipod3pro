@@ -12,21 +12,26 @@ import { COLORS, SPACING, RADIUS } from '@/src/theme/tokens';
 import GlassCard from '@/src/components/GlassCard';
 import FrequencyGraph from '@/src/components/FrequencyGraph';
 import { listProfiles, toggleStar, profileConfigUrl, publishProfile, type RemoteEQProfile } from '@/src/utils/api';
+import { listPeqAutoEqProfiles, type PeqAutoEqProfile } from '@/src/utils/peq-autoeq';
 import { useEQ } from '@/src/state/EQContext';
-import { createBand, type FilterType } from '@/src/utils/eq-parser';
+import { createBand, peqAutoEqToEqualizerApo, type FilterType } from '@/src/utils/eq-parser';
 
 type SortKey = 'trending' | 'new' | 'stars';
+type SourceKey = 'peq' | 'community';
 
 export default function DiscoverScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const eq = useEQ();
   const [profiles, setProfiles] = useState<RemoteEQProfile[]>([]);
+  const [peqProfiles, setPeqProfiles] = useState<PeqAutoEqProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [source, setSource] = useState<SourceKey>('peq');
   const [sort, setSort] = useState<SortKey>('trending');
   const [q, setQ] = useState('');
   const [toast, setToast] = useState<string | null>(null);
   const [selected, setSelected] = useState<RemoteEQProfile | null>(null);
+  const [selectedPeq, setSelectedPeq] = useState<PeqAutoEqProfile | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishName, setPublishName] = useState('');
   const [publishAuthor, setPublishAuthor] = useState('');
@@ -40,15 +45,30 @@ export default function DiscoverScreen() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await listProfiles({ sort, q: q.trim() || undefined });
-      setProfiles(list);
+      if (source === 'peq') {
+        if (peqProfiles.length === 0) {
+          const list = await listPeqAutoEqProfiles();
+          setPeqProfiles(list);
+        }
+      } else {
+        const list = await listProfiles({ sort, q: q.trim() || undefined });
+        setProfiles(list);
+      }
     } catch (e) {
       showToast('Could not load profiles');
     }
     setLoading(false);
-  }, [sort, q]);
+  }, [source, sort, q, peqProfiles.length]);
 
   useEffect(() => { load(); }, [load]);
+
+  const filteredPeqProfiles = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const list = needle
+      ? peqProfiles.filter((p) => `${p.name} ${p.source} ${p.kind}`.toLowerCase().includes(needle))
+      : peqProfiles;
+    return list.slice(0, 120);
+  }, [peqProfiles, q]);
 
   const handleStar = useCallback(async (p: RemoteEQProfile) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -82,6 +102,22 @@ export default function DiscoverScreen() {
     setSelected(null);
     showToast(`Applied "${p.name}"`);
     setTimeout(() => router.back(), 600);
+  }, [eq, router]);
+
+  const applyPeqToEQ = useCallback(async (p: PeqAutoEqProfile) => {
+    try {
+      const res = await fetch(p.downloadUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      const ok = eq.importConfig(peqAutoEqToEqualizerApo(text));
+      if (!ok) throw new Error('Invalid PEQ');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      setSelectedPeq(null);
+      showToast(`Applied "${p.name}"`);
+      setTimeout(() => router.back(), 600);
+    } catch {
+      showToast('PEQ import failed');
+    }
   }, [eq, router]);
 
   const shareConfig = useCallback(async (p: RemoteEQProfile) => {
@@ -151,9 +187,30 @@ export default function DiscoverScreen() {
           <Text style={styles.title}>Discover</Text>
           <Text style={styles.subtitle}>Audiophile-curated EQ profiles</Text>
         </View>
-        <Pressable onPress={() => setPublishOpen(true)} testID="publish-btn" style={styles.publishBtn}>
-          <Ionicons name="cloud-upload" size={14} color={COLORS.onBrandPrimary} />
-          <Text style={styles.publishBtnText}>Publish</Text>
+        {source === 'community' && (
+          <Pressable onPress={() => setPublishOpen(true)} testID="publish-btn" style={styles.publishBtn}>
+            <Ionicons name="cloud-upload" size={14} color={COLORS.onBrandPrimary} />
+            <Text style={styles.publishBtnText}>Publish</Text>
+          </Pressable>
+        )}
+      </View>
+
+      <View style={styles.sourceRow}>
+        <Pressable
+          testID="source-peq"
+          onPress={() => setSource('peq')}
+          style={[styles.sourceChip, source === 'peq' && styles.sourceChipActive]}
+        >
+          <Ionicons name="headset" size={13} color={source === 'peq' ? COLORS.brand : COLORS.onSurfaceSecondary} />
+          <Text style={[styles.sourceText, source === 'peq' && styles.sourceTextActive]}>PEQ-AutoEQ</Text>
+        </Pressable>
+        <Pressable
+          testID="source-community"
+          onPress={() => setSource('community')}
+          style={[styles.sourceChip, source === 'community' && styles.sourceChipActive]}
+        >
+          <Ionicons name="people" size={13} color={source === 'community' ? COLORS.brand : COLORS.onSurfaceSecondary} />
+          <Text style={[styles.sourceText, source === 'community' && styles.sourceTextActive]}>Community</Text>
         </Pressable>
       </View>
 
@@ -163,7 +220,7 @@ export default function DiscoverScreen() {
           testID="discover-search"
           value={q}
           onChangeText={setQ}
-          placeholder="Search profiles, tags…"
+          placeholder={source === 'peq' ? 'Search headphones...' : 'Search profiles, tags...'}
           placeholderTextColor={COLORS.onSurfaceTertiary}
           style={styles.searchInput}
           onSubmitEditing={load}
@@ -171,24 +228,56 @@ export default function DiscoverScreen() {
         />
       </View>
 
-      <View style={styles.sortRow}>
-        {sorts.map((s) => (
-          <Pressable
-            key={s.k}
-            testID={`sort-${s.k}`}
-            onPress={() => setSort(s.k)}
-            style={[styles.sortChip, sort === s.k && styles.sortChipActive]}
-          >
-            <Ionicons name={s.icon} size={12} color={sort === s.k ? COLORS.brand : COLORS.onSurfaceSecondary} />
-            <Text style={[styles.sortText, sort === s.k && styles.sortTextActive]}>{s.label}</Text>
-          </Pressable>
-        ))}
-      </View>
+      {source === 'community' ? (
+        <View style={styles.sortRow}>
+          {sorts.map((s) => (
+            <Pressable
+              key={s.k}
+              testID={`sort-${s.k}`}
+              onPress={() => setSort(s.k)}
+              style={[styles.sortChip, sort === s.k && styles.sortChipActive]}
+            >
+              <Ionicons name={s.icon} size={12} color={sort === s.k ? COLORS.brand : COLORS.onSurfaceSecondary} />
+              <Text style={[styles.sortText, sort === s.k && styles.sortTextActive]}>{s.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : (
+        <Text style={styles.sectionNote}>{filteredPeqProfiles.length} searchable PEQ presets from kaurav99/PEQ-AutoEQ</Text>
+      )}
 
       {loading ? (
         <View style={{ paddingTop: 50, alignItems: 'center' }}>
           <ActivityIndicator color={COLORS.brand} />
         </View>
+      ) : source === 'peq' ? (
+        <FlatList
+          data={filteredPeqProfiles}
+          keyExtractor={(p) => p.id}
+          contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: 140 }}
+          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+          renderItem={({ item }) => (
+            <Pressable onPress={() => setSelectedPeq(item)} testID={`peq-profile-${item.id}`}>
+              <GlassCard>
+                <View style={styles.cardRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle} numberOfLines={1}>{item.name}</Text>
+                    <Text style={styles.cardMeta} numberOfLines={1}>{item.source} / {item.kind}</Text>
+                  </View>
+                  <View style={styles.peqBadge}>
+                    <Text style={styles.peqBadgeText}>PEQ</Text>
+                  </View>
+                </View>
+              </GlassCard>
+            </Pressable>
+          )}
+          ListEmptyComponent={() => (
+            <View style={{ alignItems: 'center', paddingTop: 60 }}>
+              <Ionicons name="search-outline" size={48} color={COLORS.onSurfaceTertiary} />
+              <Text style={styles.subtitle}>No PEQ files found</Text>
+            </View>
+          )}
+        />
       ) : (
         <FlatList
           data={profiles}
@@ -235,6 +324,34 @@ export default function DiscoverScreen() {
           )}
         />
       )}
+
+      {/* PEQ detail sheet */}
+      <Modal visible={!!selectedPeq} transparent animationType="fade" onRequestClose={() => setSelectedPeq(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setSelectedPeq(null)}>
+          <Pressable style={styles.detailSheet} onPress={(e) => e.stopPropagation()}>
+            {selectedPeq && (
+              <>
+                <View style={styles.detailHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.detailTitle}>{selectedPeq.name}</Text>
+                    <Text style={styles.detailMeta}>{selectedPeq.source} / {selectedPeq.kind}</Text>
+                  </View>
+                  <Pressable onPress={() => setSelectedPeq(null)} hitSlop={10}>
+                    <Ionicons name="close" size={22} color={COLORS.onSurface} />
+                  </Pressable>
+                </View>
+                <Text style={styles.detailDesc}>PEQ-AutoEQ preset converted from AutoEQ. Applying it loads the profile into Parametric EQ.</Text>
+                <View style={styles.actions}>
+                  <Pressable testID="apply-peq-btn" onPress={() => applyPeqToEQ(selectedPeq)} style={[styles.actionBtn, styles.actionPrimary]}>
+                    <Ionicons name="checkmark-circle" size={16} color={COLORS.onBrandPrimary} />
+                    <Text style={styles.actionPrimaryText}>Apply PEQ</Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Detail sheet */}
       <Modal visible={!!selected} transparent animationType="fade" onRequestClose={() => setSelected(null)}>
@@ -349,8 +466,14 @@ const styles = StyleSheet.create({
   subtitle: { color: COLORS.onSurfaceSecondary, fontSize: 12, marginTop: 2 },
   publishBtn: { flexDirection: 'row', gap: 5, alignItems: 'center', backgroundColor: COLORS.brand, paddingHorizontal: 12, paddingVertical: 8, borderRadius: RADIUS.pill },
   publishBtnText: { color: COLORS.onBrandPrimary, fontWeight: '700', fontSize: 12 },
+  sourceRow: { flexDirection: 'row', gap: 8, paddingHorizontal: SPACING.lg, marginBottom: SPACING.md },
+  sourceChip: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9, borderRadius: RADIUS.md, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: 'transparent' },
+  sourceChipActive: { backgroundColor: COLORS.brandTertiary, borderColor: COLORS.brand },
+  sourceText: { color: COLORS.onSurfaceSecondary, fontSize: 12, fontWeight: '700' },
+  sourceTextActive: { color: COLORS.brand },
   searchRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: RADIUS.md, marginHorizontal: SPACING.lg, paddingHorizontal: 12, gap: 8 },
   searchInput: { flex: 1, color: COLORS.onSurface, paddingVertical: 10, fontSize: 13 },
+  sectionNote: { color: COLORS.onSurfaceSecondary, fontSize: 11, marginTop: SPACING.md, marginBottom: SPACING.md, paddingHorizontal: SPACING.lg },
   sortRow: { flexDirection: 'row', gap: 8, paddingHorizontal: SPACING.lg, marginTop: SPACING.md, marginBottom: SPACING.md },
   sortChip: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: RADIUS.pill, backgroundColor: 'rgba(255,255,255,0.04)' },
   sortChipActive: { backgroundColor: COLORS.brandTertiary, borderWidth: 1, borderColor: COLORS.brand },
@@ -367,6 +490,8 @@ const styles = StyleSheet.create({
   starBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: RADIUS.pill, backgroundColor: 'rgba(255,255,255,0.06)' },
   starBtnActive: { backgroundColor: COLORS.brandTertiary },
   starCount: { color: COLORS.onSurfaceSecondary, fontSize: 12, fontWeight: '700' },
+  peqBadge: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: RADIUS.pill, backgroundColor: COLORS.brandTertiary },
+  peqBadgeText: { color: COLORS.brand, fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'flex-end' },
   detailSheet: { backgroundColor: COLORS.surfaceSecondary, padding: SPACING.lg, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderTopWidth: 0.5, borderColor: 'rgba(255,255,255,0.08)' },
   detailHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },

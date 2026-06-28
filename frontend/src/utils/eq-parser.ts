@@ -66,6 +66,32 @@ export function parseEqualizerApo(text: string): EQConfig {
   return { preamp, bands };
 }
 
+function peqFilterType(filter: unknown): FilterType {
+  // PEQ-AutoEQ uses numeric HiBy-style filter ids: 0 low shelf, 1 peak, 2 high shelf.
+  if (filter === 0 || filter === '0') return 'LSC';
+  if (filter === 2 || filter === '2') return 'HSC';
+  return 'PK';
+}
+
+export function parsePeqAutoEq(text: string): EQConfig {
+  const parsed = JSON.parse(text);
+  if (!Array.isArray(parsed?.bands)) throw new Error('Invalid PEQ bands');
+  return {
+    preamp: typeof parsed.pre_amp === 'number' ? parsed.pre_amp : 0,
+    bands: parsed.bands.map((b: any) => createBand({
+      enabled: b?.on !== 0,
+      type: peqFilterType(b?.filter),
+      freq: Number(b?.freq) || 1000,
+      gain: Number(b?.gain) || 0,
+      q: Number(b?.q) || 0.707,
+    })),
+  };
+}
+
+export function peqAutoEqToEqualizerApo(text: string): string {
+  return serializeEqualizerApo(parsePeqAutoEq(text));
+}
+
 export function serializeEqualizerApo(config: EQConfig): string {
   const lines: string[] = [];
   lines.push(`# ChromeAmp Parametric EQ export`);
