@@ -1,70 +1,62 @@
 import { NativeModules, Platform } from 'react-native';
 import type { EQBand } from '@/src/utils/eq-parser';
-import { computeGainAtFrequency } from '@/src/utils/biquad';
 
-type Capabilities = {
-  available: boolean;
-  centersHz?: number[];
-  minDb?: number;
-  maxDb?: number;
+export type NativeEqStatus = {
+  status: 'idle' | 'active' | 'bypassed' | 'unavailable';
+  message: string;
+  lastAppliedAt: number;
+  bandCount: number;
+  processorCreatedAt?: number;
+  lastProcessedAt?: number;
+  processedBuffers?: number;
+  lastSampleRate?: number;
+  lastChannelCount?: number;
+  lastActiveBandCount?: number;
 };
 
 type NativeShuffleEqualizer = {
-  getCapabilities(sessionId: number): Promise<Capabilities>;
-  applyGains(sessionId: number, enabled: boolean, gainsDb: number[]): Promise<boolean>;
-  release(): Promise<boolean>;
+  applyPeq(enabled: boolean, preamp: number, bands: EQBand[]): Promise<NativeEqStatus>;
+  getStatus(): Promise<NativeEqStatus>;
+  release(): Promise<NativeEqStatus>;
 };
 
-const FALLBACK_CENTERS = [60, 230, 910, 3600, 14000];
 const moduleRef = NativeModules.ShuffleEqualizer as NativeShuffleEqualizer | undefined;
 
-let activeSessionId = 0;
 let lastConfig: { enabled: boolean; preamp: number; bands: EQBand[] } = {
   enabled: false,
   preamp: 0,
   bands: [],
 };
-let cachedCapabilities: Capabilities | null = null;
 
-function clamp(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, value));
-}
+const fallbackStatus: NativeEqStatus = {
+  status: 'unavailable',
+  message: 'Native PEQ bridge unavailable',
+  lastAppliedAt: 0,
+  bandCount: 0,
+};
 
-async function loadCapabilities(sessionId: number): Promise<Required<Capabilities>> {
-  if (cachedCapabilities?.available && cachedCapabilities.centersHz?.length) {
-    return {
-      available: true,
-      centersHz: cachedCapabilities.centersHz,
-      minDb: cachedCapabilities.minDb ?? -15,
-      maxDb: cachedCapabilities.maxDb ?? 15,
-    };
-  }
-  const caps = moduleRef ? await moduleRef.getCapabilities(sessionId).catch(() => null) : null;
-  cachedCapabilities = caps;
-  if (caps?.available && caps.centersHz?.length) {
-    return {
-      available: true,
-      centersHz: caps.centersHz,
-      minDb: caps.minDb ?? -15,
-      maxDb: caps.maxDb ?? 15,
-    };
-  }
-  return { available: false, centersHz: FALLBACK_CENTERS, minDb: -15, maxDb: 15 };
-}
-
-export async function syncNativeEq(enabled: boolean, preamp: number, bands: EQBand[]) {
+export async function syncNativeEq(enabled: boolean, preamp: number, bands: EQBand[]): Promise<NativeEqStatus> {
   lastConfig = { enabled, preamp, bands };
-  if (Platform.OS !== 'android' || !moduleRef) return false;
-  const sessionId = activeSessionId || 0;
-  const caps = await loadCapabilities(sessionId);
-  const gains = caps.centersHz.map((hz) => clamp(computeGainAtFrequency(bands, preamp, hz), caps.minDb, caps.maxDb));
-  return moduleRef.applyGains(sessionId, enabled, gains).catch(() => false);
+  if (Platform.OS !== 'android') return { ...fallbackStatus, message: 'Native PEQ DSP is Android-only' };
+  if (!moduleRef) return fallbackStatus;
+  try {
+    return await moduleRef.applyPeq(enabled, preamp, bands);
+  } catch (e) {
+    return { ...fallbackStatus, message: e instanceof Error ? e.message : 'Native PEQ sync failed' };
+  }
+}
+
+export async function getNativeEqStatus(): Promise<NativeEqStatus> {
+  if (Platform.OS !== 'android') return { ...fallbackStatus, message: 'Native PEQ DSP is Android-only' };
+  if (!moduleRef) return fallbackStatus;
+  try {
+    return await moduleRef.getStatus();
+  } catch (e) {
+    return { ...fallbackStatus, message: e instanceof Error ? e.message : 'Native PEQ status failed' };
+  }
 }
 
 export async function setNativeEqSession(sessionId: number | undefined | null) {
-  if (Platform.OS !== 'android' || !moduleRef) return false;
-  if (!sessionId || sessionId < 0 || activeSessionId === sessionId) return syncNativeEq(lastConfig.enabled, lastConfig.preamp, lastConfig.bands);
-  activeSessionId = sessionId;
-  cachedCapabilities = null;
+  if (Platform.OS !== 'android') return fallbackStatus;
   return syncNativeEq(lastConfig.enabled, lastConfig.preamp, lastConfig.bands);
 }

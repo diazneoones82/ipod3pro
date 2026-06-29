@@ -25,6 +25,13 @@ export default function EqualizerScreen() {
 
   const screenWidth = Dimensions.get('window').width;
   const graphWidth = screenWidth - SPACING.lg * 2 - 32;
+  const dspStatusText = eq.dspStatus.status === 'active'
+    ? (eq.dspStatus.processedBuffers ?? 0) > 0
+      ? `DSP processing - ${eq.dspStatus.lastActiveBandCount ?? eq.dspStatus.bandCount} bands @ ${eq.dspStatus.lastSampleRate ?? 0} Hz`
+      : `DSP armed - ${eq.dspStatus.bandCount} bands`
+    : eq.dspStatus.status === 'bypassed'
+      ? 'DSP bypassed'
+      : eq.dspStatus.message;
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -101,6 +108,18 @@ export default function EqualizerScreen() {
               thumbColor={COLORS.surface}
             />
           </View>
+        </View>
+
+        <View style={styles.dspStatusRow} testID="native-dsp-status">
+          <View style={[
+            styles.dspDot,
+            eq.dspStatus.status === 'active' && styles.dspDotActive,
+            eq.dspStatus.status === 'bypassed' && styles.dspDotBypassed,
+            eq.dspStatus.status === 'unavailable' && styles.dspDotError,
+          ]} />
+          <Text style={styles.dspStatusText} numberOfLines={2}>
+            {dspStatusText}
+          </Text>
         </View>
 
         {/* Graph */}
@@ -227,8 +246,25 @@ export default function EqualizerScreen() {
         </View>
 
         <Text style={styles.disclaimer}>
-          UI EQ curve is visualized in real-time. Real-time DSP filtering activates in native APK build (uses Android AudioEffect / Equalizer system services).
+          Native PEQ DSP uses the APK audio engine and updates while music plays.
         </Text>
+        {false && (
+        <View style={styles.dspStatusRow} testID="native-dsp-status">
+          <View style={[
+            styles.dspDot,
+            eq.dspStatus.status === 'active' && styles.dspDotActive,
+            eq.dspStatus.status === 'bypassed' && styles.dspDotBypassed,
+            eq.dspStatus.status === 'unavailable' && styles.dspDotError,
+          ]} />
+          <Text style={styles.dspStatusText} numberOfLines={2}>
+            {eq.dspStatus.status === 'active'
+              ? `DSP active · ${eq.dspStatus.bandCount} bands`
+              : eq.dspStatus.status === 'bypassed'
+                ? 'DSP bypassed'
+                : eq.dspStatus.message}
+          </Text>
+        </View>
+        )}
       </ScrollView>
 
       {toast && (
@@ -274,6 +310,12 @@ const styles = StyleSheet.create({
   actionSecondary: { backgroundColor: 'rgba(255,255,255,0.06)' },
   actionSecondaryText: { color: COLORS.onSurface, fontWeight: '600', fontSize: 13 },
   disclaimer: { color: COLORS.onSurfaceTertiary, fontSize: 11, paddingHorizontal: SPACING.lg, marginTop: SPACING.lg, lineHeight: 16 },
+  dspStatusRow: { marginHorizontal: SPACING.lg, marginTop: SPACING.sm, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: RADIUS.md, backgroundColor: 'rgba(255,255,255,0.05)' },
+  dspDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.onSurfaceTertiary },
+  dspDotActive: { backgroundColor: COLORS.success },
+  dspDotBypassed: { backgroundColor: COLORS.brand },
+  dspDotError: { backgroundColor: COLORS.error },
+  dspStatusText: { flex: 1, color: COLORS.onSurfaceSecondary, fontSize: 11, fontWeight: '600' },
   toast: { position: 'absolute', alignSelf: 'center', backgroundColor: 'rgba(245,158,11,0.95)', paddingHorizontal: 16, paddingVertical: 10, borderRadius: RADIUS.pill },
   toastText: { color: COLORS.onBrandPrimary, fontSize: 13, fontWeight: '700' },
 });

@@ -1,6 +1,5 @@
 package com.shuffleimusic.player
 
-import android.media.audiofx.Equalizer
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -10,77 +9,66 @@ import com.facebook.react.bridge.ReadableArray
 
 class ShuffleEqualizerModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
-  private var equalizer: Equalizer? = null
-  private var sessionId: Int? = null
+  private var lastStatus = "idle"
+  private var lastMessage = "DSP not synced yet"
+  private var lastAppliedAt = 0.0
+  private var lastBandCount = 0
 
   override fun getName() = "ShuffleEqualizer"
 
   @ReactMethod
-  fun getCapabilities(requestedSessionId: Int, promise: Promise) {
-    var probe: Equalizer? = null
+  fun applyPeq(enabled: Boolean, preamp: Double, bands: ReadableArray, promise: Promise) {
     try {
-      val eq = equalizer?.takeIf { sessionId == requestedSessionId } ?: Equalizer(0, requestedSessionId).also {
-        probe = it
+      val parsed = ArrayList<ShufflePeqBand>()
+      for (i in 0 until bands.size()) {
+        val map = bands.getMap(i) ?: continue
+        parsed.add(
+          ShufflePeqBand(
+            enabled = if (map.hasKey("enabled")) map.getBoolean("enabled") else true,
+            type = if (map.hasKey("type")) map.getString("type") ?: "PK" else "PK",
+            freq = if (map.hasKey("freq")) map.getDouble("freq") else 1000.0,
+            gain = if (map.hasKey("gain")) map.getDouble("gain") else 0.0,
+            q = if (map.hasKey("q")) map.getDouble("q") else 1.0
+          )
+        )
       }
-      val bandCount = eq.numberOfBands.toInt()
-      val centers = Arguments.createArray()
-      for (i in 0 until bandCount) {
-        centers.pushDouble(eq.getCenterFreq(i.toShort()) / 1000.0)
-      }
-      val range = eq.bandLevelRange
-      val result = Arguments.createMap()
-      result.putBoolean("available", true)
-      result.putArray("centersHz", centers)
-      result.putDouble("minDb", range[0] / 100.0)
-      result.putDouble("maxDb", range[1] / 100.0)
-      promise.resolve(result)
-    } catch (e: Throwable) {
-      val result = Arguments.createMap()
-      result.putBoolean("available", false)
-      result.putString("message", e.message ?: "Equalizer unavailable")
-      promise.resolve(result)
-    } finally {
-      probe?.release()
-    }
-  }
+      ShufflePeqDspConfigStore.update(ShufflePeqConfig(enabled, preamp, parsed))
 
-  @ReactMethod
-  fun applyGains(requestedSessionId: Int, enabled: Boolean, gainsDb: ReadableArray, promise: Promise) {
-    try {
-      val eq = ensureEqualizer(requestedSessionId)
-      val range = eq.bandLevelRange
-      val bandCount = eq.numberOfBands.toInt()
-      for (i in 0 until bandCount) {
-        val gain = if (i < gainsDb.size()) gainsDb.getDouble(i) else 0.0
-        val milliBel = (gain * 100.0).toInt().coerceIn(range[0].toInt(), range[1].toInt())
-        eq.setBandLevel(i.toShort(), milliBel.toShort())
-      }
-      eq.enabled = enabled
-      promise.resolve(true)
+      lastStatus = if (enabled) "active" else "bypassed"
+      lastMessage = if (enabled) "Native PEQ DSP synced" else "Native PEQ DSP bypassed"
+      lastAppliedAt = System.currentTimeMillis().toDouble()
+      lastBandCount = parsed.size
+      promise.resolve(statusMap())
     } catch (e: Throwable) {
-      promise.reject("E_SHUFFLE_EQ", e.message, e)
+      lastStatus = "unavailable"
+      lastMessage = e.cause?.message ?: e.message ?: "Native PEQ DSP unavailable"
+      lastAppliedAt = System.currentTimeMillis().toDouble()
+      lastBandCount = 0
+      promise.resolve(statusMap())
     }
   }
 
   @ReactMethod
   fun release(promise: Promise) {
-    try {
-      equalizer?.enabled = false
-      equalizer?.release()
-      equalizer = null
-      sessionId = null
-      promise.resolve(true)
-    } catch (e: Throwable) {
-      promise.reject("E_SHUFFLE_EQ_RELEASE", e.message, e)
-    }
+    applyPeq(false, 0.0, Arguments.createArray(), promise)
   }
 
-  private fun ensureEqualizer(requestedSessionId: Int): Equalizer {
-    if (equalizer == null || sessionId != requestedSessionId) {
-      equalizer?.release()
-      equalizer = Equalizer(0, requestedSessionId)
-      sessionId = requestedSessionId
-    }
-    return equalizer ?: throw IllegalStateException("Equalizer unavailable")
+  @ReactMethod
+  fun getStatus(promise: Promise) {
+    promise.resolve(statusMap())
+  }
+
+  private fun statusMap() = Arguments.createMap().apply {
+    val dsp = ShufflePeqDspConfigStore.statusSnapshot()
+    putString("status", lastStatus)
+    putString("message", lastMessage)
+    putDouble("lastAppliedAt", lastAppliedAt)
+    putInt("bandCount", lastBandCount)
+    putDouble("processorCreatedAt", (dsp["processorCreatedAt"] as? Number)?.toDouble() ?: 0.0)
+    putDouble("lastProcessedAt", (dsp["lastProcessedAt"] as? Number)?.toDouble() ?: 0.0)
+    putInt("processedBuffers", (dsp["processedBuffers"] as? Number)?.toInt() ?: 0)
+    putInt("lastSampleRate", (dsp["lastSampleRate"] as? Number)?.toInt() ?: 0)
+    putInt("lastChannelCount", (dsp["lastChannelCount"] as? Number)?.toInt() ?: 0)
+    putInt("lastActiveBandCount", (dsp["lastActiveBandCount"] as? Number)?.toInt() ?: 0)
   }
 }

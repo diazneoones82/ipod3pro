@@ -3,13 +3,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   type EQBand, type EQConfig, parseEqualizerApo, serializeEqualizerApo, PRESETS, createBand,
 } from '@/src/utils/eq-parser';
-import { syncNativeEq } from '@/src/native/ShuffleEqualizer';
+import { getNativeEqStatus, syncNativeEq, type NativeEqStatus } from '@/src/native/ShuffleEqualizer';
 
 type EQContextValue = {
   enabled: boolean;
   preamp: number;
   bands: EQBand[];
   selectedPreset: string | null;
+  dspStatus: NativeEqStatus;
   setEnabled: (v: boolean) => void;
   setPreamp: (v: number) => void;
   addBand: () => void;
@@ -35,6 +36,12 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
     createBand({ type: 'HSC', freq: 10000, gain: 0, q: 0.71 }),
   ]);
   const [selectedPreset, setSelectedPreset] = useState<string | null>('Flat');
+  const [dspStatus, setDspStatus] = useState<NativeEqStatus>({
+    status: 'idle',
+    message: 'DSP not synced yet',
+    lastAppliedAt: 0,
+    bandCount: 0,
+  });
 
   useEffect(() => {
     (async () => {
@@ -58,8 +65,31 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
   }, [enabled, preamp, bands, selectedPreset]);
 
   useEffect(() => {
-    syncNativeEq(enabled, preamp, bands).catch(() => {});
+    let canceled = false;
+    syncNativeEq(enabled, preamp, bands)
+      .then((status) => { if (!canceled) setDspStatus(status); })
+      .catch((e) => {
+        if (!canceled) {
+          setDspStatus({
+            status: 'unavailable',
+            message: e instanceof Error ? e.message : 'Native PEQ sync failed',
+            lastAppliedAt: Date.now(),
+            bandCount: 0,
+          });
+        }
+      });
+    return () => { canceled = true; };
   }, [enabled, preamp, bands]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const id = setInterval(() => {
+      getNativeEqStatus()
+        .then(setDspStatus)
+        .catch(() => {});
+    }, 1000);
+    return () => clearInterval(id);
+  }, [enabled]);
 
   const setEnabled = useCallback((v: boolean) => setEnabledState(v), []);
   const setPreamp = useCallback((v: number) => { setPreampState(v); setSelectedPreset(null); }, []);
@@ -114,10 +144,10 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
   }, [preamp, bands]);
 
   const value = useMemo(() => ({
-    enabled, preamp, bands, selectedPreset,
+    enabled, preamp, bands, selectedPreset, dspStatus,
     setEnabled, setPreamp, addBand, updateBand, removeBand,
     applyPreset, resetAll, importConfig, exportConfig,
-  }), [enabled, preamp, bands, selectedPreset,
+  }), [enabled, preamp, bands, selectedPreset, dspStatus,
        setEnabled, setPreamp, addBand, updateBand, removeBand,
        applyPreset, resetAll, importConfig, exportConfig]);
 
