@@ -7,17 +7,32 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { COLORS, SPACING, RADIUS } from '@/src/theme/tokens';
 import GlassCard from '@/src/components/GlassCard';
 import FrequencyGraph from '@/src/components/FrequencyGraph';
 import { listProfiles, toggleStar, profileConfigUrl, publishProfile, type RemoteEQProfile } from '@/src/utils/api';
 import { listPeqAutoEqProfiles, type PeqAutoEqProfile } from '@/src/utils/peq-autoeq';
+import { listAutoEqProfiles, resolveAutoEqParametricConfig, type AutoEqProfile } from '@/src/utils/autoeq';
 import { useEQ } from '@/src/state/EQContext';
-import { createBand, peqAutoEqToEqualizerApo, type FilterType } from '@/src/utils/eq-parser';
+import { createBand, parseEqualizerApo, parsePeqAutoEq, serializeEqualizerApo, peqAutoEqToEqualizerApo, type EQConfig, type FilterType } from '@/src/utils/eq-parser';
 
 type SortKey = 'trending' | 'new' | 'stars';
-type SourceKey = 'peq' | 'community';
+type SourceKey = 'peq' | 'autoeq' | 'community' | 'local';
+
+type LocalPeqProfile = {
+  id: string;
+  name: string;
+  kind: 'PEQ' | 'TXT';
+  uri: string;
+};
+
+const LOCAL_PEQ_FOLDER_KEY = '@shuffleimusic/local_peq_folder_uri';
+
+function hasUsableEqConfig(config: EQConfig): boolean {
+  return config.bands.length > 0 || Math.abs(config.preamp) > 0.001;
+}
 
 export default function DiscoverScreen() {
   const insets = useSafeAreaInsets();
@@ -25,6 +40,8 @@ export default function DiscoverScreen() {
   const eq = useEQ();
   const [profiles, setProfiles] = useState<RemoteEQProfile[]>([]);
   const [peqProfiles, setPeqProfiles] = useState<PeqAutoEqProfile[]>([]);
+  const [autoEqProfiles, setAutoEqProfiles] = useState<AutoEqProfile[]>([]);
+  const [localProfiles, setLocalProfiles] = useState<LocalPeqProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [source, setSource] = useState<SourceKey>('peq');
   const [sort, setSort] = useState<SortKey>('trending');
@@ -32,6 +49,9 @@ export default function DiscoverScreen() {
   const [toast, setToast] = useState<string | null>(null);
   const [selected, setSelected] = useState<RemoteEQProfile | null>(null);
   const [selectedPeq, setSelectedPeq] = useState<PeqAutoEqProfile | null>(null);
+  const [selectedAutoEq, setSelectedAutoEq] = useState<AutoEqProfile | null>(null);
+  const [selectedLocal, setSelectedLocal] = useState<LocalPeqProfile | null>(null);
+  const [localFolderUri, setLocalFolderUri] = useState<string | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishName, setPublishName] = useState('');
   const [publishAuthor, setPublishAuthor] = useState('');
@@ -50,6 +70,13 @@ export default function DiscoverScreen() {
           const list = await listPeqAutoEqProfiles();
           setPeqProfiles(list);
         }
+      } else if (source === 'autoeq') {
+        if (autoEqProfiles.length === 0) {
+          const list = await listAutoEqProfiles();
+          setAutoEqProfiles(list);
+        }
+      } else if (source === 'local') {
+        // Local profiles are populated by the Android folder picker.
       } else {
         const list = await listProfiles({ sort, q: q.trim() || undefined });
         setProfiles(list);
@@ -58,7 +85,7 @@ export default function DiscoverScreen() {
       showToast('Could not load profiles');
     }
     setLoading(false);
-  }, [source, sort, q, peqProfiles.length]);
+  }, [source, sort, q, peqProfiles.length, autoEqProfiles.length]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -69,6 +96,107 @@ export default function DiscoverScreen() {
       : peqProfiles;
     return list.slice(0, 120);
   }, [peqProfiles, q]);
+
+  const filteredAutoEqProfiles = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const list = needle
+      ? autoEqProfiles.filter((p) => `${p.name} ${p.source} ${p.measurement}`.toLowerCase().includes(needle))
+      : autoEqProfiles;
+    return list.slice(0, 120);
+  }, [autoEqProfiles, q]);
+
+  const filteredLocalProfiles = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return needle
+      ? localProfiles.filter((p) => `${p.name} ${p.kind}`.toLowerCase().includes(needle))
+      : localProfiles;
+  }, [localProfiles, q]);
+
+  const collectLocalPeqFiles = useCallback(async (rootUri: string) => {
+    const found: LocalPeqProfile[] = [];
+    const seen = new Set<string>();
+    const walk = async (dirUri: string, depth: number) => {
+      if (depth > 5) return;
+      let entries: string[] = [];
+      try {
+        entries = await FileSystem.StorageAccessFramework.readDirectoryAsync(dirUri);
+      } catch {
+        return;
+      }
+      for (const uri of entries) {
+        const decoded = decodeURIComponent(uri);
+        const name = decoded.split('/').pop()?.replace(/^document:/, '') || decoded;
+        if (/\.(peq|txt)$/i.test(name)) {
+          if (seen.has(uri)) continue;
+          seen.add(uri);
+          found.push({
+            id: uri,
+            uri,
+            name: name.replace(/\.(peq|txt)$/i, ''),
+            kind: /\.peq$/i.test(name) ? 'PEQ' : 'TXT',
+          });
+          continue;
+        }
+        if (!/\.[a-z0-9]{1,8}$/i.test(name)) {
+          await walk(uri, depth + 1);
+        }
+      }
+    };
+    await walk(rootUri, 0);
+    return found.sort((a, b) => a.name.localeCompare(b.name));
+  }, []);
+
+  const loadLocalPeqFolder = useCallback(async (folderUri: string, silent = false) => {
+    try {
+      setLoading(true);
+      const files = await collectLocalPeqFiles(folderUri);
+      setLocalProfiles(files);
+      setLocalFolderUri(folderUri);
+      setSource('local');
+      if (!silent) showToast(files.length ? `Loaded ${files.length} local presets` : 'No .peq or .txt files found');
+      return files.length;
+    } catch {
+      if (!silent) showToast('Saved PEQ folder is unavailable');
+      return 0;
+    } finally {
+      setLoading(false);
+    }
+  }, [collectLocalPeqFiles]);
+
+  useEffect(() => {
+    AsyncStorage.getItem(LOCAL_PEQ_FOLDER_KEY)
+      .then((uri) => {
+        if (uri) {
+          setLocalFolderUri(uri);
+          loadLocalPeqFolder(uri, true);
+        }
+      })
+      .catch(() => {});
+  }, [loadLocalPeqFolder]);
+
+  const pickLocalPeqFolder = useCallback(async () => {
+    try {
+      setLoading(true);
+      const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!permissions.granted) return;
+      await AsyncStorage.setItem(LOCAL_PEQ_FOLDER_KEY, permissions.directoryUri);
+      await loadLocalPeqFolder(permissions.directoryUri);
+    } catch {
+      showToast('Folder import failed');
+    } finally {
+      setLoading(false);
+    }
+  }, [loadLocalPeqFolder]);
+
+  const openLocalImport = useCallback(() => {
+    setSource('local');
+    if (localProfiles.length > 0) return;
+    if (localFolderUri) {
+      loadLocalPeqFolder(localFolderUri);
+      return;
+    }
+    pickLocalPeqFolder();
+  }, [loadLocalPeqFolder, localFolderUri, localProfiles.length, pickLocalPeqFolder]);
 
   const handleStar = useCallback(async (p: RemoteEQProfile) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -97,7 +225,7 @@ export default function DiscoverScreen() {
     const text = [`Preamp: ${p.preamp.toFixed(1)} dB`,
       ...bands.map((b, i) => `Filter ${i + 1}: ${b.enabled ? 'ON' : 'OFF'} ${b.type} Fc ${b.freq.toFixed(0)} Hz Gain ${b.gain.toFixed(1)} dB Q ${b.q.toFixed(3)}`)
     ].join('\n');
-    eq.importConfig(text);
+    eq.importConfig(text, p.name);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     setSelected(null);
     showToast(`Applied "${p.name}"`);
@@ -109,7 +237,7 @@ export default function DiscoverScreen() {
       const res = await fetch(p.downloadUrl);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
-      const ok = eq.importConfig(peqAutoEqToEqualizerApo(text));
+      const ok = eq.importConfig(peqAutoEqToEqualizerApo(text), p.name);
       if (!ok) throw new Error('Invalid PEQ');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setSelectedPeq(null);
@@ -117,6 +245,60 @@ export default function DiscoverScreen() {
       setTimeout(() => router.back(), 600);
     } catch {
       showToast('PEQ import failed');
+    }
+  }, [eq, router]);
+
+  const applyAutoEqToEQ = useCallback(async (p: AutoEqProfile) => {
+    try {
+      const text = await resolveAutoEqParametricConfig(p);
+      const ok = eq.importConfig(text, p.name);
+      if (!ok) throw new Error('Invalid AutoEq config');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      setSelectedAutoEq(null);
+      showToast(`Applied "${p.name}"`);
+      setTimeout(() => router.back(), 600);
+    } catch {
+      showToast('AutoEq import failed');
+    }
+  }, [eq, router]);
+
+  const applyLocalToEQ = useCallback(async (p: LocalPeqProfile) => {
+    try {
+      const text = await FileSystem.StorageAccessFramework.readAsStringAsync(p.uri);
+      const trimmed = text.trim();
+      const errors: string[] = [];
+      let imported = false;
+
+      const tryImport = (config: EQConfig) => {
+        if (!hasUsableEqConfig(config)) throw new Error('No usable EQ bands');
+        const ok = eq.importConfig(serializeEqualizerApo(config), p.name);
+        if (!ok) throw new Error('EQ import rejected');
+        imported = true;
+      };
+
+      if (p.kind === 'PEQ' || trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          tryImport(parsePeqAutoEq(text));
+        } catch (e) {
+          errors.push(e instanceof Error ? e.message : 'PEQ parse failed');
+        }
+      }
+
+      if (!imported) {
+        try {
+          tryImport(parseEqualizerApo(text));
+        } catch (e) {
+          errors.push(e instanceof Error ? e.message : 'APO parse failed');
+        }
+      }
+
+      if (!imported) throw new Error(errors[0] || 'Invalid local PEQ');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      setSelectedLocal(null);
+      showToast(`Applied "${p.name}"`);
+      setTimeout(() => router.back(), 600);
+    } catch {
+      showToast('Local import failed');
     }
   }, [eq, router]);
 
@@ -202,7 +384,15 @@ export default function DiscoverScreen() {
           style={[styles.sourceChip, source === 'peq' && styles.sourceChipActive]}
         >
           <Ionicons name="headset" size={13} color={source === 'peq' ? COLORS.brand : COLORS.onSurfaceSecondary} />
-          <Text style={[styles.sourceText, source === 'peq' && styles.sourceTextActive]}>PEQ-AutoEQ</Text>
+          <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.sourceText, source === 'peq' && styles.sourceTextActive]}>PEQ</Text>
+        </Pressable>
+        <Pressable
+          testID="source-autoeq"
+          onPress={() => setSource('autoeq')}
+          style={[styles.sourceChip, source === 'autoeq' && styles.sourceChipActive]}
+        >
+          <Ionicons name="analytics" size={13} color={source === 'autoeq' ? COLORS.brand : COLORS.onSurfaceSecondary} />
+          <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.sourceText, source === 'autoeq' && styles.sourceTextActive]}>AutoEq</Text>
         </Pressable>
         <Pressable
           testID="source-community"
@@ -210,7 +400,15 @@ export default function DiscoverScreen() {
           style={[styles.sourceChip, source === 'community' && styles.sourceChipActive]}
         >
           <Ionicons name="people" size={13} color={source === 'community' ? COLORS.brand : COLORS.onSurfaceSecondary} />
-          <Text style={[styles.sourceText, source === 'community' && styles.sourceTextActive]}>Community</Text>
+          <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.sourceText, source === 'community' && styles.sourceTextActive]}>Community</Text>
+        </Pressable>
+        <Pressable
+          testID="source-local-import"
+          onPress={openLocalImport}
+          style={[styles.sourceChip, source === 'local' && styles.sourceChipActive]}
+        >
+          <Ionicons name="folder-open" size={13} color={source === 'local' ? COLORS.brand : COLORS.onSurfaceSecondary} />
+          <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.sourceText, source === 'local' && styles.sourceTextActive]}>Import</Text>
         </Pressable>
       </View>
 
@@ -220,7 +418,7 @@ export default function DiscoverScreen() {
           testID="discover-search"
           value={q}
           onChangeText={setQ}
-          placeholder={source === 'peq' ? 'Search headphones...' : 'Search profiles, tags...'}
+          placeholder={source === 'community' ? 'Search profiles, tags...' : source === 'local' ? 'Search local PEQ files...' : 'Search headphones...'}
           placeholderTextColor={COLORS.onSurfaceTertiary}
           style={styles.searchInput}
           onSubmitEditing={load}
@@ -242,6 +440,16 @@ export default function DiscoverScreen() {
             </Pressable>
           ))}
         </View>
+      ) : source === 'local' ? (
+        <View style={styles.localImportHeader}>
+          <Text style={styles.sectionNote}>{filteredLocalProfiles.length} local presets from selected Android folder</Text>
+          <Pressable testID="pick-local-peq-folder" onPress={pickLocalPeqFolder} style={styles.localImportBtn}>
+            <Ionicons name="folder-open-outline" size={14} color={COLORS.onBrandPrimary} />
+            <Text style={styles.localImportBtnText}>Choose Folder</Text>
+          </Pressable>
+        </View>
+      ) : source === 'autoeq' ? (
+        <Text style={styles.sectionNote}>{filteredAutoEqProfiles.length} searchable AutoEq headphone profiles</Text>
       ) : (
         <Text style={styles.sectionNote}>{filteredPeqProfiles.length} searchable PEQ presets from kaurav99/PEQ-AutoEQ</Text>
       )}
@@ -275,6 +483,66 @@ export default function DiscoverScreen() {
             <View style={{ alignItems: 'center', paddingTop: 60 }}>
               <Ionicons name="search-outline" size={48} color={COLORS.onSurfaceTertiary} />
               <Text style={styles.subtitle}>No PEQ files found</Text>
+            </View>
+          )}
+        />
+      ) : source === 'autoeq' ? (
+        <FlatList
+          data={filteredAutoEqProfiles}
+          keyExtractor={(p) => p.id}
+          contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: 140 }}
+          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+          renderItem={({ item }) => (
+            <Pressable onPress={() => setSelectedAutoEq(item)} testID={`autoeq-profile-${item.id}`}>
+              <GlassCard>
+                <View style={styles.cardRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle} numberOfLines={1}>{item.name}</Text>
+                    <Text style={styles.cardMeta} numberOfLines={1}>{item.source} / {item.measurement}</Text>
+                  </View>
+                  <View style={styles.peqBadge}>
+                    <Text style={styles.peqBadgeText}>AEQ</Text>
+                  </View>
+                </View>
+              </GlassCard>
+            </Pressable>
+          )}
+          ListEmptyComponent={() => (
+            <View style={{ alignItems: 'center', paddingTop: 60 }}>
+              <Ionicons name="search-outline" size={48} color={COLORS.onSurfaceTertiary} />
+              <Text style={styles.subtitle}>No AutoEq profiles found</Text>
+            </View>
+          )}
+        />
+      ) : source === 'local' ? (
+        <FlatList
+          data={filteredLocalProfiles}
+          keyExtractor={(p) => p.id}
+          contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: 140 }}
+          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+          renderItem={({ item }) => (
+            <Pressable onPress={() => setSelectedLocal(item)} testID={`local-peq-profile-${item.id}`}>
+              <GlassCard>
+                <View style={styles.cardRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle} numberOfLines={1}>{item.name}</Text>
+                    <Text style={styles.cardMeta} numberOfLines={1}>Local Android folder</Text>
+                  </View>
+                  <View style={styles.peqBadge}>
+                    <Text style={styles.peqBadgeText}>{item.kind}</Text>
+                  </View>
+                </View>
+              </GlassCard>
+            </Pressable>
+          )}
+          ListEmptyComponent={() => (
+            <View style={{ alignItems: 'center', paddingTop: 60 }}>
+              <Ionicons name="folder-open-outline" size={48} color={COLORS.onSurfaceTertiary} />
+              <Text style={styles.subtitle}>Choose a folder with .peq or .txt files</Text>
+              <Pressable testID="empty-pick-local-peq-folder" onPress={pickLocalPeqFolder} style={[styles.localImportBtn, { marginTop: SPACING.md }]}>
+                <Ionicons name="folder-open-outline" size={14} color={COLORS.onBrandPrimary} />
+                <Text style={styles.localImportBtnText}>Choose Folder</Text>
+              </Pressable>
             </View>
           )}
         />
@@ -325,6 +593,34 @@ export default function DiscoverScreen() {
         />
       )}
 
+      {/* Local PEQ detail sheet */}
+      <Modal visible={!!selectedLocal} transparent animationType="fade" onRequestClose={() => setSelectedLocal(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setSelectedLocal(null)}>
+          <Pressable style={styles.detailSheet} onPress={(e) => e.stopPropagation()}>
+            {selectedLocal && (
+              <>
+                <View style={styles.detailHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.detailTitle}>{selectedLocal.name}</Text>
+                    <Text style={styles.detailMeta}>Local {selectedLocal.kind} preset</Text>
+                  </View>
+                  <Pressable onPress={() => setSelectedLocal(null)} hitSlop={10}>
+                    <Ionicons name="close" size={22} color={COLORS.onSurface} />
+                  </Pressable>
+                </View>
+                <Text style={styles.detailDesc}>Imported from the Android folder you selected. Applying it loads the file into Parametric EQ.</Text>
+                <View style={styles.actions}>
+                  <Pressable testID="apply-local-peq-btn" onPress={() => applyLocalToEQ(selectedLocal)} style={[styles.actionBtn, styles.actionPrimary]}>
+                    <Ionicons name="checkmark-circle" size={16} color={COLORS.onBrandPrimary} />
+                    <Text style={styles.actionPrimaryText}>Apply Import</Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       {/* PEQ detail sheet */}
       <Modal visible={!!selectedPeq} transparent animationType="fade" onRequestClose={() => setSelectedPeq(null)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setSelectedPeq(null)}>
@@ -345,6 +641,34 @@ export default function DiscoverScreen() {
                   <Pressable testID="apply-peq-btn" onPress={() => applyPeqToEQ(selectedPeq)} style={[styles.actionBtn, styles.actionPrimary]}>
                     <Ionicons name="checkmark-circle" size={16} color={COLORS.onBrandPrimary} />
                     <Text style={styles.actionPrimaryText}>Apply PEQ</Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* AutoEq detail sheet */}
+      <Modal visible={!!selectedAutoEq} transparent animationType="fade" onRequestClose={() => setSelectedAutoEq(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setSelectedAutoEq(null)}>
+          <Pressable style={styles.detailSheet} onPress={(e) => e.stopPropagation()}>
+            {selectedAutoEq && (
+              <>
+                <View style={styles.detailHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.detailTitle}>{selectedAutoEq.name}</Text>
+                    <Text style={styles.detailMeta}>{selectedAutoEq.source} / {selectedAutoEq.measurement}</Text>
+                  </View>
+                  <Pressable onPress={() => setSelectedAutoEq(null)} hitSlop={10}>
+                    <Ionicons name="close" size={22} color={COLORS.onSurface} />
+                  </Pressable>
+                </View>
+                <Text style={styles.detailDesc}>AutoEq headphone profile. Applying it imports the ParametricEQ file into the native PEQ chain.</Text>
+                <View style={styles.actions}>
+                  <Pressable testID="apply-autoeq-btn" onPress={() => applyAutoEqToEQ(selectedAutoEq)} style={[styles.actionBtn, styles.actionPrimary]}>
+                    <Ionicons name="checkmark-circle" size={16} color={COLORS.onBrandPrimary} />
+                    <Text style={styles.actionPrimaryText}>Apply AutoEq</Text>
                   </Pressable>
                 </View>
               </>
@@ -466,14 +790,17 @@ const styles = StyleSheet.create({
   subtitle: { color: COLORS.onSurfaceSecondary, fontSize: 12, marginTop: 2 },
   publishBtn: { flexDirection: 'row', gap: 5, alignItems: 'center', backgroundColor: COLORS.brand, paddingHorizontal: 12, paddingVertical: 8, borderRadius: RADIUS.pill },
   publishBtnText: { color: COLORS.onBrandPrimary, fontWeight: '700', fontSize: 12 },
-  sourceRow: { flexDirection: 'row', gap: 8, paddingHorizontal: SPACING.lg, marginBottom: SPACING.md },
-  sourceChip: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9, borderRadius: RADIUS.md, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: 'transparent' },
+  sourceRow: { flexDirection: 'row', gap: 6, paddingHorizontal: SPACING.lg, marginBottom: SPACING.md },
+  sourceChip: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, paddingHorizontal: 4, paddingVertical: 9, borderRadius: RADIUS.md, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: 'transparent' },
   sourceChipActive: { backgroundColor: COLORS.brandTertiary, borderColor: COLORS.brand },
-  sourceText: { color: COLORS.onSurfaceSecondary, fontSize: 12, fontWeight: '700' },
+  sourceText: { flexShrink: 1, color: COLORS.onSurfaceSecondary, fontSize: 10, fontWeight: '700' },
   sourceTextActive: { color: COLORS.brand },
   searchRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: RADIUS.md, marginHorizontal: SPACING.lg, paddingHorizontal: 12, gap: 8 },
   searchInput: { flex: 1, color: COLORS.onSurface, paddingVertical: 10, fontSize: 13 },
   sectionNote: { color: COLORS.onSurfaceSecondary, fontSize: 11, marginTop: SPACING.md, marginBottom: SPACING.md, paddingHorizontal: SPACING.lg },
+  localImportHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: SPACING.sm, paddingRight: SPACING.lg },
+  localImportBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.brand, paddingHorizontal: 12, paddingVertical: 8, borderRadius: RADIUS.pill },
+  localImportBtnText: { color: COLORS.onBrandPrimary, fontSize: 12, fontWeight: '700' },
   sortRow: { flexDirection: 'row', gap: 8, paddingHorizontal: SPACING.lg, marginTop: SPACING.md, marginBottom: SPACING.md },
   sortChip: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: RADIUS.pill, backgroundColor: 'rgba(255,255,255,0.04)' },
   sortChipActive: { backgroundColor: COLORS.brandTertiary, borderWidth: 1, borderColor: COLORS.brand },

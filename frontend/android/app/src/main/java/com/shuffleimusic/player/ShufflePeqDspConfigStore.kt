@@ -11,7 +11,12 @@ data class ShufflePeqBand(
 data class ShufflePeqConfig(
   val enabled: Boolean = false,
   val preamp: Double = 0.0,
-  val bands: List<ShufflePeqBand> = emptyList()
+  val bands: List<ShufflePeqBand> = emptyList(),
+  val loudnessDb: Double = 0.0,
+  val stereoWidth: Double = 1.0,
+  val bassBoostDb: Double = 0.0,
+  val virtualizerStrength: Double = 0.0,
+  val reverbPreset: Int = -1
 )
 
 object ShufflePeqDspConfigStore {
@@ -56,7 +61,12 @@ object ShufflePeqDspConfigStore {
           "gain" to it.gain,
           "q" to it.q
         )
-      }
+      },
+      "loudnessDb" to current.loudnessDb,
+      "stereoWidth" to current.stereoWidth,
+      "bassBoostDb" to current.bassBoostDb,
+      "virtualizerStrength" to current.virtualizerStrength,
+      "reverbPreset" to current.reverbPreset
     )
   }
 

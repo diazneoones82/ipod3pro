@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Shuffle IMusic",
-    "slug": "shuffle-imusic",
+    "name": "Shuffle MuSic",
+    "slug": "shuffle-music",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -11,8 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSAppleMusicUsageDescription": "Browse your music library to play tracks",
-        "NSMicrophoneUsageDescription": "Required for audio playback features"
+        "NSAppleMusicUsageDescription": "Browse your music library to play tracks"
       }
     },
     "android": {
@@ -27,8 +26,7 @@
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.WAKE_LOCK",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.ACCESS_MEDIA_LOCATION"
+        "android.permission.MODIFY_AUDIO_SETTINGS"
       ],
       "package": "com.shuffleimusic.player"
     },
@@ -43,9 +41,9 @@
       [
         "expo-media-library",
         {
-          "photosPermission": "Allow Shuffle IMusic to access your media",
-          "savePhotosPermission": "Allow Shuffle IMusic to save media",
-          "isAccessMediaLocationEnabled": true
+          "photosPermission": "Allow Shuffle MuSic to access your audio library",
+          "savePhotosPermission": "Allow Shuffle MuSic to save music files",
+          "isAccessMediaLocationEnabled": false
         }
       ],
       [

@@ -10,6 +10,16 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 import uuid
 from datetime import datetime, timezone
+import asyncio
+import base64
+from functools import lru_cache
+import hashlib
+import hmac
+import re
+import time
+import urllib.parse
+import requests
+from difflib import SequenceMatcher
 
 
 ROOT_DIR = Path(__file__).parent
@@ -193,6 +203,382 @@ async def get_profile_config(profile_id: str):
     # Bump download count
     await db.eq_profiles.update_one({"id": profile_id}, {"$inc": {"downloads": 1}})
     return "\n".join(lines)
+
+
+# --- Lyrics ---
+class LyricsOut(BaseModel):
+    source: str
+    title: str
+    artist: str = ""
+    album: str = ""
+    plainLyrics: str = ""
+    syncedLyrics: str = ""
+    providerTrackId: str = ""
+
+
+class AlbumArtOut(BaseModel):
+    source: str
+    title: str = ""
+    artist: str = ""
+    album: str = ""
+    artworkUrl: str
+    score: float = 0.0
+
+
+LYRICS_CACHE_TTL_SEC = int(os.environ.get("LYRICS_CACHE_TTL_SEC", str(60 * 60 * 24 * 30)))
+MUSIXMATCH_ENABLED = os.environ.get("SHUFFLE_ENABLE_MUSIXMATCH", "true").lower() not in {"0", "false", "no"}
+MUSIXMATCH_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+def _lyrics_cache_key(track: str, artist: Optional[str]) -> str:
+    return f"{(artist or '').strip().lower()}::{track.strip().lower()}"
+
+
+def _norm_text(value: Optional[str]) -> str:
+    value = value or ""
+    value = re.sub(r"\[[^\]]*]|\([^)]*\)", " ", value)
+    value = re.sub(r"\b(official|audio|video|lyrics?|lyric video|remaster(?:ed)?|radio edit|explicit|clean)\b", " ", value, flags=re.I)
+    value = re.sub(r"[^a-z0-9]+", " ", value.lower())
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _similar(a: Optional[str], b: Optional[str]) -> float:
+    na = _norm_text(a)
+    nb = _norm_text(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    if na in nb or nb in na:
+        return 0.88
+    return SequenceMatcher(None, na, nb).ratio()
+
+
+def _duration_score(candidate_sec: Optional[float], target_sec: Optional[float]) -> float:
+    if not candidate_sec or not target_sec:
+        return 0.0
+    diff = abs(float(candidate_sec) - float(target_sec))
+    if diff <= 2:
+        return 1.0
+    if diff <= 6:
+        return 0.75
+    if diff <= 12:
+        return 0.35
+    return -0.25
+
+
+def _score_track(candidate_title: Optional[str], candidate_artist: Optional[str], track: str, artist: Optional[str], candidate_duration: Optional[float] = None, duration: Optional[float] = None, candidate_album: Optional[str] = None, album: Optional[str] = None) -> float:
+    score = _similar(candidate_title, track) * 0.52
+    if artist:
+        score += _similar(candidate_artist, artist) * 0.30
+    else:
+        score += 0.08
+    if album:
+        score += _similar(candidate_album, album) * 0.12
+    else:
+        score += 0.04
+    score += _duration_score(candidate_duration, duration) * 0.08
+    return score
+
+
+def _lyrics_from_lrclib(track: str, artist: Optional[str], album: Optional[str], duration: Optional[float]) -> Optional[LyricsOut]:
+    params = {"track_name": track}
+    if artist:
+        params["artist_name"] = artist
+    if album:
+        params["album_name"] = album
+    if duration:
+        params["duration"] = str(round(duration))
+    res = requests.get("https://lrclib.net/api/search", params=params, timeout=8)
+    res.raise_for_status()
+    matches = res.json()
+    if not isinstance(matches, list):
+        return None
+    ranked = sorted(
+        matches,
+        key=lambda match: _score_track(
+            match.get("trackName"),
+            match.get("artistName"),
+            track,
+            artist,
+            match.get("duration"),
+            duration,
+            match.get("albumName"),
+            album,
+        ),
+        reverse=True,
+    )
+    for match in ranked:
+        plain = match.get("plainLyrics") or ""
+        synced = match.get("syncedLyrics") or ""
+        score = _score_track(
+            match.get("trackName"),
+            match.get("artistName"),
+            track,
+            artist,
+            match.get("duration"),
+            duration,
+            match.get("albumName"),
+            album,
+        )
+        min_score = 0.78 if artist and album else 0.74 if artist else 0.58
+        if (plain or synced) and score >= min_score:
+            return LyricsOut(
+                source=f"LRCLIB {score:.0%}",
+                title=match.get("trackName") or track,
+                artist=match.get("artistName") or artist or "",
+                album=match.get("albumName") or album or "",
+                plainLyrics=plain,
+                syncedLyrics=synced,
+                providerTrackId=str(match.get("id") or ""),
+            )
+    return None
+
+
+@lru_cache(maxsize=1)
+def _musixmatch_secret() -> str:
+    search = requests.get(
+        "https://www.musixmatch.com/search",
+        headers={"User-Agent": MUSIXMATCH_USER_AGENT, "Cookie": "mxm_bab=AB"},
+        timeout=8,
+    )
+    search.raise_for_status()
+    matches = re.findall(r'src="([^"]*/_next/static/chunks/pages/_app-[^"]+\.js)"', search.text)
+    if not matches:
+        raise RuntimeError("Musixmatch app bundle not found")
+    bundle_url = urllib.parse.urljoin("https://www.musixmatch.com", matches[-1])
+    bundle = requests.get(bundle_url, headers={"User-Agent": MUSIXMATCH_USER_AGENT}, timeout=8)
+    bundle.raise_for_status()
+    match = re.search(r'from\(\s*"(.*?)"\s*\.split', bundle.text)
+    if not match:
+        raise RuntimeError("Musixmatch signature secret not found")
+    return base64.b64decode(match.group(1)[::-1]).decode("utf-8")
+
+
+def _musixmatch_signed_request(path: str) -> dict:
+    base = "https://www.musixmatch.com/ws/1.1/"
+    unsigned = base + path.replace("%20", "+").replace(" ", "+")
+    now = datetime.now()
+    message = f"{unsigned}{now.year}{now.month:02d}{now.day:02d}".encode()
+    digest = hmac.new(_musixmatch_secret().encode(), message, hashlib.sha256).digest()
+    signature = urllib.parse.quote(base64.b64encode(digest).decode())
+    url = f"{unsigned}&signature={signature}&signature_protocol=sha256"
+    res = requests.get(url, headers={"User-Agent": MUSIXMATCH_USER_AGENT}, timeout=8)
+    res.raise_for_status()
+    return res.json()
+
+
+def _lyrics_from_musixmatch(track: str, artist: Optional[str], album: Optional[str], duration: Optional[float]) -> Optional[LyricsOut]:
+    query = f"{track} {artist or ''}".strip()
+    search_path = (
+        "track.search?app_id=web-desktop-app-v1.0&format=json"
+        f"&q={urllib.parse.quote(query)}&f_has_lyrics=true&page_size=5&page=1"
+    )
+    search = _musixmatch_signed_request(search_path)
+    items = search.get("message", {}).get("body", {}).get("track_list", [])
+    if not items:
+        return None
+    ranked = sorted(
+        [item.get("track") or {} for item in items],
+        key=lambda info: _score_track(
+            info.get("track_name"),
+            info.get("artist_name"),
+            track,
+            artist,
+            (float(info.get("track_length")) if info.get("track_length") else None),
+            duration,
+            info.get("album_name"),
+            album,
+        ),
+        reverse=True,
+    )
+    track_info = ranked[0] if ranked else {}
+    score = _score_track(
+        track_info.get("track_name"),
+        track_info.get("artist_name"),
+        track,
+        artist,
+        (float(track_info.get("track_length")) if track_info.get("track_length") else None),
+        duration,
+        track_info.get("album_name"),
+        album,
+    )
+    if score < (0.76 if artist and album else 0.72 if artist else 0.56):
+        return None
+    track_id = track_info.get("track_id")
+    if not track_id:
+        return None
+    lyrics = _musixmatch_signed_request(
+        "track.lyrics.get?app_id=web-desktop-app-v1.0&format=json"
+        f"&track_id={urllib.parse.quote(str(track_id))}"
+    )
+    body = lyrics.get("message", {}).get("body", {}).get("lyrics", {})
+    text = body.get("lyrics_body") or ""
+    if not text:
+        return None
+    return LyricsOut(
+        source=f"Musixmatch {score:.0%}",
+        title=track_info.get("track_name") or track,
+        artist=track_info.get("artist_name") or artist or "",
+        album=track_info.get("album_name") or "",
+        plainLyrics=text.strip(),
+        providerTrackId=str(track_id),
+    )
+
+
+def _lookup_lyrics_sync(track: str, artist: Optional[str], album: Optional[str], duration: Optional[float]) -> Optional[LyricsOut]:
+    try:
+        found = _lyrics_from_lrclib(track, artist, album, duration)
+        if found:
+            return found
+    except Exception as exc:
+        logger.warning("LRCLIB lyrics lookup failed: %s", exc)
+    if MUSIXMATCH_ENABLED:
+        try:
+            return _lyrics_from_musixmatch(track, artist, album, duration)
+        except Exception as exc:
+            logger.warning("Musixmatch lyrics lookup failed: %s", exc)
+    return None
+
+
+@api_router.get("/lyrics", response_model=LyricsOut)
+async def get_lyrics(track: str = Query(..., min_length=1), artist: Optional[str] = None, album: Optional[str] = None, duration: Optional[float] = None):
+    key = f"{_lyrics_cache_key(track, artist)}::{_norm_text(album)}::{round(duration or 0)}"
+    now = int(time.time())
+    cached = await db.lyrics_cache.find_one({"key": key}, {"_id": 0})
+    if cached and now - int(cached.get("cached_at", 0)) < LYRICS_CACHE_TTL_SEC:
+        return LyricsOut(**cached["lyrics"])
+    found = await asyncio.to_thread(_lookup_lyrics_sync, track, artist, album, duration)
+    if not found:
+        raise HTTPException(status_code=404, detail="Lyrics not found")
+    await db.lyrics_cache.update_one(
+        {"key": key},
+        {"$set": {"key": key, "cached_at": now, "lyrics": found.dict()}},
+        upsert=True,
+    )
+    return found
+
+
+def _coverart_url_for_release_group(mbid: str) -> Optional[str]:
+    url = f"https://coverartarchive.org/release-group/{mbid}/front-500"
+    res = requests.get(url, allow_redirects=True, timeout=8)
+    if res.status_code == 200:
+        return res.url
+    return None
+
+
+def _album_art_from_musicbrainz(track: str, artist: Optional[str], album: Optional[str], duration: Optional[float]) -> Optional[AlbumArtOut]:
+    terms = [f'recording:"{track}"']
+    if artist:
+        terms.append(f'artist:"{artist}"')
+    if album:
+        terms.append(f'release:"{album}"')
+    query = " AND ".join(terms)
+    res = requests.get(
+        "https://musicbrainz.org/ws/2/recording/",
+        params={"query": query, "fmt": "json", "limit": 5},
+        headers={"User-Agent": "ShuffleMuSic/1.0.0 (local Android music player)"},
+        timeout=8,
+    )
+    res.raise_for_status()
+    recordings = res.json().get("recordings", [])
+    candidates: list[tuple[float, dict, dict]] = []
+    for rec in recordings:
+        for release in rec.get("releases") or []:
+            rg = release.get("release-group") or {}
+            candidates.append((
+                _score_track(
+                    rec.get("title"),
+                    (rec.get("artist-credit") or [{}])[0].get("name"),
+                    track,
+                    artist,
+                    (float(rec.get("length", 0)) / 1000 if rec.get("length") else None),
+                    duration,
+                    release.get("title"),
+                    album,
+                ),
+                rec,
+                rg,
+            ))
+    for score, rec, rg in sorted(candidates, key=lambda item: item[0], reverse=True):
+        if score < (0.70 if artist else 0.55):
+            continue
+        if rg.get("id"):
+            cover = _coverart_url_for_release_group(rg["id"])
+            if cover:
+                return AlbumArtOut(
+                    source=f"MusicBrainz/Cover Art Archive {score:.0%}",
+                    title=rec.get("title") or track,
+                    artist=(rec.get("artist-credit") or [{}])[0].get("name") or artist or "",
+                    album=rg.get("title") or album or "",
+                    artworkUrl=cover,
+                    score=score,
+                )
+    return None
+
+
+def _album_art_from_itunes(track: str, artist: Optional[str], album: Optional[str], duration: Optional[float]) -> Optional[AlbumArtOut]:
+    term = " ".join([v for v in [artist, track, album] if v])
+    res = requests.get(
+        "https://itunes.apple.com/search",
+        params={"media": "music", "entity": "song", "limit": 15, "term": term, "country": "US"},
+        timeout=8,
+    )
+    res.raise_for_status()
+    results = res.json().get("results", [])
+    best: Optional[tuple[float, dict]] = None
+    for item in results:
+        score = _score_track(
+            item.get("trackName"),
+            item.get("artistName"),
+            track,
+            artist,
+            (float(item.get("trackTimeMillis")) / 1000 if item.get("trackTimeMillis") else None),
+            duration,
+            item.get("collectionName"),
+            album,
+        )
+        if best is None or score > best[0]:
+            best = (score, item)
+    if not best or best[0] < (0.70 if artist else 0.55):
+        return None
+    score, item = best
+    raw = item.get("artworkUrl100")
+    if not raw:
+        return None
+    return AlbumArtOut(
+        source=f"iTunes {score:.0%}",
+        title=item.get("trackName") or track,
+        artist=item.get("artistName") or artist or "",
+        album=item.get("collectionName") or album or "",
+        artworkUrl=re.sub(r"100x100bb\.(jpg|png)$", r"1200x1200bb.\1", raw),
+        score=score,
+    )
+
+
+def _lookup_album_art_sync(track: str, artist: Optional[str], album: Optional[str], duration: Optional[float]) -> Optional[AlbumArtOut]:
+    try:
+        found = _album_art_from_musicbrainz(track, artist, album, duration)
+        if found:
+            return found
+    except Exception as exc:
+        logger.warning("MusicBrainz album art lookup failed: %s", exc)
+    try:
+        return _album_art_from_itunes(track, artist, album, duration)
+    except Exception as exc:
+        logger.warning("iTunes album art lookup failed: %s", exc)
+    return None
+
+
+@api_router.get("/album-art", response_model=AlbumArtOut)
+async def get_album_art(track: str = Query(..., min_length=1), artist: Optional[str] = None, album: Optional[str] = None, duration: Optional[float] = None):
+    found = await asyncio.to_thread(_lookup_album_art_sync, track, artist, album, duration)
+    if not found:
+        raise HTTPException(status_code=404, detail="Album art not found")
+    return found
 
 
 # --- Seed initial community presets on startup ---

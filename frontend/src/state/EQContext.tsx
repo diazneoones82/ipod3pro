@@ -5,25 +5,48 @@ import {
 } from '@/src/utils/eq-parser';
 import { getNativeEqStatus, syncNativeEq, type NativeEqStatus } from '@/src/native/ShuffleEqualizer';
 
+export type CustomEQProfile = {
+  slot: number;
+  name: string;
+  preamp: number;
+  bands: EQBand[];
+  savedAt: number;
+};
+
 type EQContextValue = {
   enabled: boolean;
   preamp: number;
   bands: EQBand[];
+  loudnessDb: number;
+  stereoWidth: number;
+  bassBoostDb: number;
+  virtualizerStrength: number;
+  reverbPreset: number;
   selectedPreset: string | null;
   dspStatus: NativeEqStatus;
+  customProfiles: CustomEQProfile[];
   setEnabled: (v: boolean) => void;
   setPreamp: (v: number) => void;
+  setLoudness: (v: number) => void;
+  setStereoWidth: (v: number) => void;
+  setBassBoost: (v: number) => void;
+  setVirtualizer: (v: number) => void;
+  setReverbPreset: (v: number) => void;
   addBand: () => void;
   updateBand: (id: string, patch: Partial<EQBand>) => void;
   removeBand: (id: string) => void;
   applyPreset: (name: string) => void;
+  saveCustomProfile: (slot: number, name: string) => void;
+  applyCustomProfile: (slot: number) => boolean;
+  deleteCustomProfile: (slot: number) => void;
   resetAll: () => void;
-  importConfig: (text: string) => boolean;
+  importConfig: (text: string, profileName?: string) => boolean;
   exportConfig: () => string;
 };
 
 const EQCtx = createContext<EQContextValue | null>(null);
-const STORAGE_KEY = '@shuffleimusic/eq_config_v1';
+const STORAGE_KEY = '@shuffleimusic/eq_config_v2';
+const CUSTOM_PROFILES_KEY = '@shuffleimusic/custom_eq_profiles_v1';
 
 export function EQProvider({ children }: { children: React.ReactNode }) {
   const [enabled, setEnabledState] = useState(true);
@@ -35,6 +58,12 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
     createBand({ type: 'PK', freq: 4000, gain: 0, q: 1.0 }),
     createBand({ type: 'HSC', freq: 10000, gain: 0, q: 0.71 }),
   ]);
+  const [loudnessDb, setLoudnessDb] = useState(0);
+  const [stereoWidth, setStereoWidthState] = useState(1.0);
+  const [bassBoostDb, setBassBoostDb] = useState(0);
+  const [virtualizerStrength, setVirtualizerStrength] = useState(0);
+  const [reverbPreset, setReverbPresetState] = useState(-1);
+
   const [selectedPreset, setSelectedPreset] = useState<string | null>('Flat');
   const [dspStatus, setDspStatus] = useState<NativeEqStatus>({
     status: 'idle',
@@ -42,44 +71,80 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
     lastAppliedAt: 0,
     bandCount: 0,
   });
+  const [customProfiles, setCustomProfiles] = useState<CustomEQProfile[]>([]);
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        if (!raw) return;
-        const parsed = JSON.parse(raw);
-        if (parsed?.bands) setBands(parsed.bands);
-        if (typeof parsed?.preamp === 'number') setPreampState(parsed.preamp);
-        if (typeof parsed?.enabled === 'boolean') setEnabledState(parsed.enabled);
-        if (parsed?.selectedPreset) setSelectedPreset(parsed.selectedPreset);
-      } catch {}
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed?.bands) setBands(parsed.bands);
+          if (typeof parsed?.preamp === 'number') setPreampState(parsed.preamp);
+          if (typeof parsed?.enabled === 'boolean') setEnabledState(parsed.enabled);
+          if (typeof parsed?.loudnessDb === 'number') setLoudnessDb(parsed.loudnessDb);
+          if (typeof parsed?.stereoWidth === 'number') setStereoWidthState(parsed.stereoWidth);
+          if (typeof parsed?.bassBoostDb === 'number') setBassBoostDb(parsed.bassBoostDb);
+          if (typeof parsed?.virtualizerStrength === 'number') setVirtualizerStrength(parsed.virtualizerStrength);
+          if (typeof parsed?.reverbPreset === 'number') setReverbPresetState(parsed.reverbPreset);
+          if (parsed?.selectedPreset) setSelectedPreset(parsed.selectedPreset);
+        }
+        const customRaw = await AsyncStorage.getItem(CUSTOM_PROFILES_KEY);
+        if (customRaw) {
+          const parsed = JSON.parse(customRaw);
+          if (Array.isArray(parsed)) {
+            setCustomProfiles(parsed.filter((p) => p?.slot >= 1 && p?.slot <= 5 && Array.isArray(p?.bands)));
+          }
+        }
+      } catch {
+      } finally {
+        setHydrated(true);
+      }
     })();
   }, []);
 
   // Persist
   useEffect(() => {
+    if (!hydrated) return;
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({
-      enabled, preamp, bands, selectedPreset,
+      enabled, preamp, bands, selectedPreset, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset,
     })).catch(() => {});
-  }, [enabled, preamp, bands, selectedPreset]);
+  }, [enabled, hydrated, preamp, bands, selectedPreset, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset]);
 
   useEffect(() => {
+    if (!hydrated) return;
+    AsyncStorage.setItem(CUSTOM_PROFILES_KEY, JSON.stringify(customProfiles)).catch(() => {});
+  }, [customProfiles, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
     let canceled = false;
-    syncNativeEq(enabled, preamp, bands)
-      .then((status) => { if (!canceled) setDspStatus(status); })
-      .catch((e) => {
-        if (!canceled) {
-          setDspStatus({
-            status: 'unavailable',
-            message: e instanceof Error ? e.message : 'Native PEQ sync failed',
-            lastAppliedAt: Date.now(),
-            bandCount: 0,
-          });
-        }
-      });
+    import('@/src/native/ShuffleEqualizer').then(({ syncNativeAudioEffects }) => {
+      syncNativeAudioEffects({
+        enabled,
+        preamp,
+        bands,
+        loudnessDb,
+        stereoWidth,
+        bassBoostDb,
+        virtualizerStrength,
+        reverbPreset,
+      })
+        .then((status) => { if (!canceled) setDspStatus(status); })
+        .catch((e) => {
+          if (!canceled) {
+            setDspStatus({
+              status: 'unavailable',
+              message: e instanceof Error ? e.message : 'Native effects sync failed',
+              lastAppliedAt: Date.now(),
+              bandCount: 0,
+            });
+          }
+        });
+    });
     return () => { canceled = true; };
-  }, [enabled, preamp, bands]);
+  }, [enabled, hydrated, preamp, bands, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -93,6 +158,11 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
 
   const setEnabled = useCallback((v: boolean) => setEnabledState(v), []);
   const setPreamp = useCallback((v: number) => { setPreampState(v); setSelectedPreset(null); }, []);
+  const setLoudness = useCallback((v: number) => setLoudnessDb(v), []);
+  const setStereoWidth = useCallback((v: number) => setStereoWidthState(v), []);
+  const setBassBoost = useCallback((v: number) => setBassBoostDb(v), []);
+  const setVirtualizer = useCallback((v: number) => setVirtualizerStrength(v), []);
+  const setReverbPreset = useCallback((v: number) => setReverbPresetState(v), []);
 
   const addBand = useCallback(() => {
     setBands((b) => [...b, createBand({ freq: 1000, gain: 0, q: 1.0 })]);
@@ -124,14 +194,49 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
     setSelectedPreset(name);
   }, []);
 
-  const resetAll = useCallback(() => applyPreset('Flat'), [applyPreset]);
+  const saveCustomProfile = useCallback((slot: number, name: string) => {
+    if (slot < 1 || slot > 5) return;
+    const profile: CustomEQProfile = {
+      slot,
+      name: (name || `Custom ${slot}`).trim(),
+      preamp,
+      bands: bands.map((b) => ({ ...b })),
+      savedAt: Date.now(),
+    };
+    setCustomProfiles((list) => [
+      ...list.filter((p) => p.slot !== slot),
+      profile,
+    ].sort((a, b) => a.slot - b.slot));
+  }, [bands, preamp]);
 
-  const importConfig = useCallback((text: string): boolean => {
+  const applyCustomProfile = useCallback((slot: number): boolean => {
+    const profile = customProfiles.find((p) => p.slot === slot);
+    if (!profile) return false;
+    setPreampState(profile.preamp);
+    setBands(profile.bands.map((b) => createBand(b)));
+    setSelectedPreset(profile.name);
+    return true;
+  }, [customProfiles]);
+
+  const deleteCustomProfile = useCallback((slot: number) => {
+    setCustomProfiles((list) => list.filter((p) => p.slot !== slot));
+  }, []);
+
+  const resetAll = useCallback(() => {
+    applyPreset('Flat');
+    setLoudnessDb(0);
+    setStereoWidthState(1.0);
+    setBassBoostDb(0);
+    setVirtualizerStrength(0);
+    setReverbPresetState(-1);
+  }, [applyPreset]);
+
+  const importConfig = useCallback((text: string, profileName?: string): boolean => {
     try {
       const cfg = parseEqualizerApo(text);
       setPreampState(cfg.preamp);
       setBands(cfg.bands.length ? cfg.bands : []);
-      setSelectedPreset(null);
+      setSelectedPreset(profileName?.trim() || null);
       return true;
     } catch {
       return false;
@@ -144,12 +249,14 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
   }, [preamp, bands]);
 
   const value = useMemo(() => ({
-    enabled, preamp, bands, selectedPreset, dspStatus,
-    setEnabled, setPreamp, addBand, updateBand, removeBand,
-    applyPreset, resetAll, importConfig, exportConfig,
-  }), [enabled, preamp, bands, selectedPreset, dspStatus,
-       setEnabled, setPreamp, addBand, updateBand, removeBand,
-       applyPreset, resetAll, importConfig, exportConfig]);
+    enabled, preamp, bands, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset, selectedPreset, dspStatus, customProfiles,
+    setEnabled, setPreamp, setLoudness, setStereoWidth, setBassBoost, setVirtualizer, setReverbPreset,
+    addBand, updateBand, removeBand,
+    applyPreset, saveCustomProfile, applyCustomProfile, deleteCustomProfile, resetAll, importConfig, exportConfig,
+  }), [enabled, preamp, bands, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset, selectedPreset, dspStatus, customProfiles,
+       setEnabled, setPreamp, setLoudness, setStereoWidth, setBassBoost, setVirtualizer, setReverbPreset,
+       addBand, updateBand, removeBand,
+       applyPreset, saveCustomProfile, applyCustomProfile, deleteCustomProfile, resetAll, importConfig, exportConfig]);
 
   return <EQCtx.Provider value={value}>{children}</EQCtx.Provider>;
 }

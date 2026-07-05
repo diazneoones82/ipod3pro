@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { View, Pressable, StyleSheet, Text, Platform } from 'react-native';
+import { View, Pressable, StyleSheet, Text, Platform, Vibration } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { GestureHandlerRootView, GestureDetector, Gesture } from 'react-native-gesture-handler';
@@ -13,12 +13,13 @@ export type ClickWheelAction = 'menu' | 'prev' | 'next' | 'play' | 'stop' | 'sel
 type Props = {
   size?: number;
   mode?: 'volume' | 'track';
+  hapticStrength?: number;
   onAction: (a: ClickWheelAction) => void;
 };
 
-const TICK_STEP_RAD = (2 * Math.PI) / 36; // 36 ticks per full rotation = 10° per tick
+const TICK_STEP_RAD = (2 * Math.PI) / 44; // smaller ticks keep the wheel responsive without feeling jumpy
 
-export default function ClickWheel({ size = 280, mode = 'volume', onAction }: Props) {
+export default function ClickWheel({ size = 280, mode = 'volume', hapticStrength = 70, onAction }: Props) {
   const accumAngle = useSharedValue(0);
   const lastAngle = useSharedValue(0);
   const dragging = useSharedValue(0);
@@ -27,9 +28,21 @@ export default function ClickWheel({ size = 280, mode = 'volume', onAction }: Pr
   const center = size / 2;
   const innerSize = size * 0.42;
 
-  const triggerHaptic = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-  }, []);
+  const triggerHaptic = useCallback((kind: 'tick' | 'button' = 'tick') => {
+    const strength = Math.max(0, Math.min(100, Math.round(hapticStrength)));
+    if (strength <= 0) return;
+    const style = strength >= 74
+      ? Haptics.ImpactFeedbackStyle.Heavy
+      : strength >= 38
+        ? Haptics.ImpactFeedbackStyle.Medium
+        : Haptics.ImpactFeedbackStyle.Light;
+    Haptics.impactAsync(style).catch(() => {});
+    if (Platform.OS === 'android') {
+      const intensity = Math.pow(strength / 100, 0.72);
+      const maxMs = kind === 'button' ? 72 : 44;
+      Vibration.vibrate(Math.max(2, Math.round(intensity * maxMs)));
+    }
+  }, [hapticStrength]);
 
   const handleAngleChange = useCallback((deltaTicks: number) => {
     if (deltaTicks === 0) return;
@@ -82,7 +95,7 @@ export default function ClickWheel({ size = 280, mode = 'volume', onAction }: Pr
   }));
 
   const fireAction = (a: ClickWheelAction) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    triggerHaptic('button');
     onAction(a);
   };
 

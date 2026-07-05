@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/wheel_widget_root"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:padding="2dp">
+
+  <ImageView
+    android:id="@+id/wheel_widget_glow"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:layout_gravity="center"
+    android:contentDescription="Playback wheel"
+    android:scaleType="fitCenter" />
+
+  <TextView
+    android:id="@+id/wheel_widget_vol_up"
+    android:layout_width="96dp"
+    android:layout_height="56dp"
+    android:layout_gravity="top|center_horizontal"
+    android:layout_marginTop="16dp"
+    android:background="#00000000"
+    android:text="" />
+
+  <TextView
+    android:id="@+id/wheel_widget_vol_down"
+    android:layout_width="96dp"
+    android:layout_height="56dp"
+    android:layout_gravity="bottom|center_horizontal"
+    android:layout_marginBottom="16dp"
+    android:background="#00000000"
+    android:text="" />
+
+  <TextView
+    android:id="@+id/wheel_widget_prev"
+    android:layout_width="72dp"
+    android:layout_height="78dp"
+    android:layout_gravity="center_vertical|start"
+    android:layout_marginStart="16dp"
+    android:background="#00000000"
+    android:text="" />
+
+  <TextView
+    android:id="@+id/wheel_widget_next"
+    android:layout_width="72dp"
+    android:layout_height="78dp"
+    android:layout_gravity="center_vertical|end"
+    android:layout_marginEnd="16dp"
+    android:background="#00000000"
+    android:text="" />
+
+  <TextView
+    android:id="@+id/wheel_widget_play"
+    android:layout_width="82dp"
+    android:layout_height="82dp"
+    android:layout_gravity="center"
+    android:background="#00000000"
+    android:text="" />
+</FrameLayout>

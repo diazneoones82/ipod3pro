@@ -3,8 +3,6 @@ import { View, StyleSheet, LayoutChangeEvent } from 'react-native';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { runOnJS, useSharedValue } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { COLORS } from '@/src/theme/tokens';
-
 type Props = {
   // 0..1
   progress: number;
@@ -16,6 +14,7 @@ type Props = {
 };
 
 const BAR_COUNT = 56;
+const PROGRESS_COLORS = ['#FF2BD6', '#8B5CFF', '#00F5FF', '#20FF9F', '#B6FF00', '#FFD400', '#FF5C00'];
 
 // Simple deterministic PRNG from string seed
 function hashStr(s: string): number {
@@ -81,13 +80,15 @@ export default function WaveformScrubber({ progress, duration, seed, onSeek, tes
       runOnJS(seekToRatio)(r);
     });
 
-  const filledCount = Math.round(progress * BAR_COUNT);
+  const clampedProgress = Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
+  const filledCount = clampedProgress > 0 ? Math.max(1, Math.round(clampedProgress * BAR_COUNT)) : 0;
 
   return (
     <GestureDetector gesture={pan}>
       <View style={styles.wrap} onLayout={onLayout} testID={testID} collapsable={false}>
         {bars.map((h, i) => {
           const filled = i < filledCount;
+          const color = PROGRESS_COLORS[i % PROGRESS_COLORS.length];
           return (
             <View
               key={i}
@@ -95,7 +96,11 @@ export default function WaveformScrubber({ progress, duration, seed, onSeek, tes
                 styles.bar,
                 {
                   height: 8 + h * 24,
-                  backgroundColor: filled ? COLORS.brand : 'rgba(255,255,255,0.18)',
+                  backgroundColor: color,
+                  opacity: filled ? 1 : 0.32,
+                  shadowColor: color,
+                  shadowOpacity: filled ? 0.75 : 0.16,
+                  shadowRadius: filled ? 5 : 2,
                 },
               ]}
             />

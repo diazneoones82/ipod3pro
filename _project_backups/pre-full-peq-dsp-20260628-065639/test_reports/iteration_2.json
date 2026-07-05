@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 2 — Discover community EQ profiles + Waveform scrubber + Sleep Timer + Gapless toggle. Backend: 10/10 pytest cases PASS — GET /api/eq-profiles (default trending, ?sort=new, ?sort=stars, ?q=bass), GET by id (with 404), POST publish, POST star toggle (persistence verified via GET with user_id), GET /config (Equalizer APO format), seed idempotency confirmed (8 profiles seeded once; backend log: 'Seeded 8 EQ profiles'). Frontend: All required testIDs present and tappable. Player screen renders waveform-scrubber and sleep-timer-btn; sleep sheet shows all 6 presets (5/15/30/45/60/90), tapping sleep-15 activates timer and sleep-clear-btn becomes visible. Tap-to-seek on waveform does NOT crash with empty queue. Equalizer screen has open-discover-btn that navigates to Discover; discover-back returns. Discover shows 8 seeded profiles (9 after our prior tests created TEST_Bright_*); sort-trending/new/stars chips re-fetch list; discover-search input is functional; star-{id} optimistically updates (verified 0 → 1). Detail modal opens on card tap with apply-profile-btn / share-profile-btn / detail-star-btn; share does not crash on web; apply-profile-btn imports config to EQ context and navigates back. Publish modal accepts publish-name/publish-author/publish-desc, publish-confirm posts and prepends the new profile (verified TEST_UI_Profile_X appears at top after publish). Settings: setting-sleep opens sheet, setting-gapless row present, setting-discover navigates to Discover. No red-screen errors. Only console warnings observed are the same RN-Web deprecation warnings carried over from iteration 1 (shadow*/pointerEvents) — non-blocking.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/eq-profiles?sort=stars", "issue": "Sort uses pre-stored star_count which is only updated on toggle_star. Newly created profiles default to star_count=0 which is fine, but if seed data ever inserts profiles with starred_by entries (it currently doesn't), star_count must be kept in sync. Currently consistent."},
+      {"endpoint": "POST /api/eq-profiles", "issue": "user_id is a query param (not used to attribute authorship). Author comes from request body. Minor — not a bug, just inconsistent with star endpoint which puts user_id in body."},
+      {"endpoint": "GET /api/eq-profiles/{id}/config", "issue": "Side-effect: increments downloads counter on every GET. RESTful purists would prefer POST /download. Acceptable for current scope."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "expo-file-system/legacy", "issue": "discover.tsx imports 'expo-file-system/legacy' (same as equalizer.tsx). Legacy submodule will be removed in a future Expo SDK. Plan migration to the new File API. Reference: /app/frontend/app/discover.tsx:9"},
+      {"component": "RN Web shadow* props", "issue": "Console warns 'shadow* style props are deprecated. Use boxShadow.' carried over from iteration 1 (ClickWheel/GlassCard shadow styles). Non-blocking on web; native still needs shadow*. Reference: /app/frontend/src/components/ClickWheel.tsx, /app/frontend/src/components/GlassCard.tsx"},
+      {"component": "RN Web pointerEvents prop", "issue": "Console warns 'props.pointerEvents is deprecated. Use style.pointerEvents.' Source: LinearGradient/BlurView overlays. Non-blocking. Reference: /app/frontend/app/discover.tsx:336 (toast pointerEvents=\"none\"), /app/frontend/src/components/ClickWheel.tsx"}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_eq_profiles.py",
+    "/app/backend/tests/test_api_basic.py",
+    "/app/test_reports/pytest/iteration_2.xml"
+  ],
+  "action_items": [
+    "(Optional) Migrate 'expo-file-system/legacy' imports in discover.tsx & equalizer.tsx to the new File API before next Expo SDK upgrade.",
+    "(Optional) Replace shadow* style props with boxShadow on web (Platform.select) to silence RN Web warnings.",
+    "(Optional) Move pointerEvents from props to style.pointerEvents on LinearGradient/BlurView/toast overlays.",
+    "(Optional cleanup) Test data: a few TEST_* profiles (TEST_Bright_*, TEST_UI_Profile_X) were created in MongoDB during this run; consider a cleanup script or filter them out in production.",
+    "(Optional) Validate true background-audio + lock-screen controls + sleep-timer auto-pause + gapless preload only in a real APK build (Expo Go / web preview cannot exercise native expo-audio playback).",
+    "(Optional) Consider a unique index on eq_profiles.id so that future seed/restart paths cannot create duplicates if the count check is bypassed."
+  ],
+  "critical_code_review_comments": [
+    "server.py:148 — `_profile_to_out` re-uses `_profile_to_out(doc, user_id)` on the just-inserted dict; safe because `doc.pop('_id', None)` is called first.",
+    "server.py:121 — list_profiles uses pre-stored star_count for sorting (correct because Mongo can't sort by computed len(starred_by)). star_count is updated in toggle_star but NOT in create_profile — verified that create initializes it to 0, so this is consistent.",
+    "server.py:306 @app.on_event('startup') — seed runs only when count==0; idempotent across restarts. Verified backend log shows 'Seeded 8 EQ profiles' exactly once.",
+    "discover.tsx:53-68 — Optimistic star update reverts on failure but only restores the *single* profile from closure; if many parallel stars happen race conditions could occur. Acceptable for single-user UX.",
+    "discover.tsx:85 — applyToEQ does `setTimeout(router.back, 600)` which can fire after unmount; protected by Modal closing first. Low risk.",
+    "PlayerContext.tsx:122-138 — Sleep-timer/gapless effect re-creates intervals on every dependency change including durationSec; intentional to react to track changes. Verified UI doesn't crash."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_eq_profiles.py (new)"
+  ],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% (all required testIDs present & flows verified)"},
+  "seed_data_creation": "Backend auto-seeds 8 community EQ profiles on first startup (idempotent). During this test run we also created 2 TEST_* profiles via publish POST (TEST_Bright_<hash> from pytest, TEST_UI_Profile_X from Playwright) — both visible at top of ?sort=new as expected.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend env variable is EXPO_PUBLIC_BACKEND_URL (not EXPO_BACKEND_URL). Pytest harness honors either via fallback. The Discover screen lives at /discover (Expo Router) and is reached via either the 'Discover' badge on the Equalizer screen (open-discover-btn) or the setting-discover row on Settings. The sleep-timer sheet is rendered by SleepTimerSheet component and is opened from both Player header (sleep-timer-btn) and Settings (setting-sleep). The gapless toggle is a Switch inside the setting-gapless row; tapping the row itself does not toggle — only the Switch element does. Native expo-audio playback / lock-screen controls / true background audio remain untestable on web preview — must be validated in APK build.",
+  "rca_of_issue": "N/A — no functional bugs found. All listed flows pass end-to-end."
+}

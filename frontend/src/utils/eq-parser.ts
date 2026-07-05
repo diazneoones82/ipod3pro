@@ -174,4 +174,41 @@ export const PRESETS: { name: string; config: EQConfig }[] = [
       ],
     },
   },
+  {
+    name: 'Dolby Surround',
+    config: {
+      preamp: -4,
+      bands: [
+        createBand({ type: 'LSC', freq: 50, gain: 3.5, q: 0.7 }),
+        createBand({ type: 'PK', freq: 200, gain: -1, q: 1.0 }),
+        createBand({ type: 'PK', freq: 3000, gain: 2.5, q: 0.8 }),
+        createBand({ type: 'PK', freq: 6000, gain: 3.0, q: 1.0 }),
+        createBand({ type: 'HSC', freq: 12000, gain: 4.5, q: 0.7 }),
+      ],
+    },
+  },
+  {
+    name: 'JBL Signature',
+    config: {
+      preamp: -5,
+      bands: [
+        createBand({ type: 'LSC', freq: 65, gain: 6.0, q: 0.7 }),
+        createBand({ type: 'PK', freq: 250, gain: 2.0, q: 1.0 }),
+        createBand({ type: 'PK', freq: 5000, gain: 3.0, q: 1.2 }),
+        createBand({ type: 'HSC', freq: 10000, gain: 4.0, q: 0.7 }),
+      ],
+    },
+  },
+  {
+    name: 'Sony ClearAudio+',
+    config: {
+      preamp: -3,
+      bands: [
+        createBand({ type: 'LSC', freq: 40, gain: 4.0, q: 0.7 }),
+        createBand({ type: 'PK', freq: 150, gain: 1.5, q: 1.0 }),
+        createBand({ type: 'PK', freq: 4000, gain: 2.0, q: 1.0 }),
+        createBand({ type: 'HSC', freq: 15000, gain: 3.0, q: 0.7 }),
+      ],
+    },
+  },
 ];

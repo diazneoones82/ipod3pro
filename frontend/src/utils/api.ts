@@ -69,3 +69,40 @@ export async function toggleStar(id: string): Promise<{ stars: number; starred: 
 export function profileConfigUrl(id: string): string {
   return `${BASE}/api/eq-profiles/${id}/config`;
 }
+
+export type LyricsResult = {
+  source: string;
+  title: string;
+  artist: string;
+  album?: string;
+  plainLyrics: string;
+  syncedLyrics?: string;
+  providerTrackId?: string;
+};
+
+export async function fetchLyrics(opts: { track: string; artist?: string; album?: string; duration?: number }): Promise<LyricsResult> {
+  const params = new URLSearchParams();
+  params.set('track', opts.track);
+  if (opts.artist) params.set('artist', opts.artist);
+  if (opts.album) params.set('album', opts.album);
+  if (opts.duration) params.set('duration', String(Math.round(opts.duration)));
+  return api<LyricsResult>(`/lyrics?${params}`);
+}
+
+export type AlbumArtResult = {
+  source: string;
+  title: string;
+  artist: string;
+  album: string;
+  artworkUrl: string;
+  score: number;
+};
+
+export async function fetchAlbumArt(opts: { track: string; artist?: string; album?: string; duration?: number }): Promise<AlbumArtResult> {
+  const params = new URLSearchParams();
+  params.set('track', opts.track);
+  if (opts.artist) params.set('artist', opts.artist);
+  if (opts.album) params.set('album', opts.album);
+  if (opts.duration) params.set('duration', String(Math.round(opts.duration)));
+  return api<AlbumArtResult>(`/album-art?${params}`);
+}

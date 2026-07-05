@@ -1,0 +1,157 @@
+{
+  "app_name": "ChromeAmp",
+  "personality": "Fusion of 6 Glass / Luxe (Structure & Glass) + 7 Dark-First Utility (Metrics & Layout)",
+  "personality_one_liner": "A stunning, high-end audiophile experience merging the nostalgic tactile feedback of an iPod click wheel with Vision Pro-style dark glassmorphism.",
+  "color": {
+    "surface": "#05050A",
+    "onSurface": "#EDEDF0",
+    "surfaceSecondary": "#12121A",
+    "onSurfaceSecondary": "#A0A0AB",
+    "surfaceTertiary": "#1E1E26",
+    "onSurfaceTertiary": "#7A7A85",
+    "surfaceInverse": "#F5F5F7",
+    "onSurfaceInverse": "#05050A",
+    "brand": "#F59E0B",
+    "brandPrimary": "#F59E0B",
+    "onBrandPrimary": "#05050A",
+    "brandSecondary": "#D97706",
+    "onBrandSecondary": "#F5F5F7",
+    "brandTertiary": "#452A05",
+    "onBrandTertiary": "#FDE68A",
+    "success": "#10B981",
+    "onSuccess": "#022C22",
+    "warning": "#F59E0B",
+    "onWarning": "#452A05",
+    "error": "#E11D48",
+    "onError": "#4C0519",
+    "info": "#E2E8F0",
+    "onInfo": "#0F172A",
+    "border": "#2A2A35",
+    "borderStrong": "#404050",
+    "divider": "#1E1E26"
+  },
+  "typography": {
+    "displayFontFamily": "Fraunces",
+    "textFontFamily": "Switzer",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous spacing for glass elements. Safe areas strictly enforced. Padding inside cards should let text breathe.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Use glass heavily for the Click Wheel center button, tab bar, and EQ cards.",
+      "Add a translucent tinted base underneath blur for readability (≥75% opacity of surface in dark mode).",
+      "Apply gradient-to-dark scrim over any full-bleed background imagery."
+    ],
+    "dont's": [
+      "Do not use blur on body text regions or form fields.",
+      "Never place thin serif typography directly on noisy imagery without a scrim."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Player (Home)",
+      "purpose": "Primary music playback interface featuring the iconic Chrome Click Wheel and Now Playing details.",
+      "states": {
+        "loading": "Centered sleek amber spinner",
+        "empty": "No active track. Shows default vinyl record art and prompts to select a folder.",
+        "error": "Failed to load audio. Retry button in glass pill."
+      },
+      "layout": "Screen background uses a deeply blurred atmospheric photo (misty glass) overlaid with a dark gradient scrim (Layer 0). Top area contains the Album Art rendered as a large square with soft rounded corners inside a glass frame. Below it: Track Title (marquee if long) and Artist Name. Below that: the Timeline scrubber. Bottom half is entirely dominated by the Click Wheel: a large circular component. The outer ring has an 'expo-linear-gradient' giving a metallic/chrome appearance. 4 directional labels (MENU, ⏮, ⏭, ⏯) sit on the ring. The center button is a deeply blurred glass circle (expo-blur) with a subtle inset shadow. The bottom tab bar is absolutely positioned glass over the wheel's lower edge."
+    },
+    {
+      "name": "Folders",
+      "purpose": "Browse Android storage to pick a folder and play all tracks inside.",
+      "states": {
+        "loading": "Skeleton loaders for folder rows.",
+        "empty": "Illustration of an empty file cabinet, 'No folders found'.",
+        "error": "Storage permission denied message with a primary CTA 'Grant Permission'."
+      },
+      "layout": "Large serif title 'Storage'. A pinned 'Recently Played' section at the top with a horizontal scrolling row of glass cards. Below, a vertical list of folders. Each folder row uses a brandTertiary-tinted icon container (folder icon) next to the folder name and track count. Tapping a folder pushes to a 'Folder Detail' view (List of tracks, tapping one starts playback and navigates back to Player)."
+    },
+    {
+      "name": "Equalizer",
+      "purpose": "Advanced parametric equalizer with customizable bands and EqualizerAPO integration.",
+      "states": {
+        "loading": "Spinner",
+        "empty": "N/A",
+        "error": "Invalid EqualizerAPO file format."
+      },
+      "layout": "Large serif title 'Parametric EQ'. Top section: A rich glass card displaying the Frequency Response Graph (using a bright brandPrimary line charting the curve). Middle section: A horizontal ScrollView of pill-shaped preset buttons (Flat, Rock, Bass Boost, Custom). Lower section: A vertical list of EQ Bands. Each band is a glass card containing a dropdown for Filter Type (Peak, High-Shelf, etc.) and 3 sliders for Freq (Hz), Gain (dB), and Q-Factor. Sticky primary CTA at the bottom to 'Import .txt Config'."
+    },
+    {
+      "name": "Settings",
+      "purpose": "Manage app preferences, permissions, and view about info.",
+      "states": {
+        "loading": "N/A",
+        "empty": "N/A",
+        "error": "N/A"
+      },
+      "layout": "Simple vertical list of glassmorphic rows. Sections for 'Permissions', 'Theme', and 'About'. Each row has a left icon inside a tinted rounded square container, title, and right chevron. Standard bottom tab bar navigation."
+    }
+  ],
+  "haptics": {
+    "click_wheel_scroll": "selection (light, repeated rapidly during circular drag)",
+    "click_wheel_button_press": "impactMedium",
+    "eq_slider_drag_commit": "impactLight",
+    "preset_select": "impactMedium",
+    "folder_open": "impactLight"
+  },
+  "images": {
+    "default_album_art": {
+      "url": "https://images.unsplash.com/photo-1585838017777-5003198884b5?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzN8MHwxfHNlYXJjaHwxfHx2aW50YWdlJTIwdmlueWwlMjByZWNvcmQlMjBjb3ZlciUyMGFydHxlbnwwfHx8fDE3ODI1MjcxMTZ8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Vintage black and white vinyl record cover"
+    },
+    "hero_background": {
+      "url": "https://images.pexels.com/photos/9807251/pexels-photo-9807251.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Atmospheric mist on glass window used as blurred backdrop"
+    }
+  },
+  "instructions_to_main_agent": [
+    "CRITICAL: Adhere to the <Glassmorphism_and_Blur> rules. Use expo-blur over translucent surfaceSecondary/Tertiary layers to create depth. The click wheel center button must be glass.",
+    "CRITICAL: The click wheel outer ring MUST use `expo-linear-gradient` to simulate a chrome metallic reflection. Use stops like #404050, #A0A0AB, #2A2A35 to create a shiny metallic ring.",
+    "CRITICAL: Implement circular gesture recognition using react-native-gesture-handler on the click wheel ring. Map the angle changes to volume or track scrolling. Trigger light haptics repeatedly as the angle changes.",
+    "CRITICAL: Do NOT use blue, indigo, or purple. Stick to the provided dark obsidian colors and the amber (#F59E0B) brand color.",
+    "CRITICAL: Use Fraunces for large headers (like Equalizer, Folders) to give a high-end audiophile/luxury vibe, but use Switzer for all body text and metrics.",
+    "CRITICAL: The Equalizer screen requires complex UI. Use Reanimated for smooth slider interactions. Ensure the parametric EQ bands have 3 parameters each: Freq, Gain, Q-factor.",
+    "CRITICAL: Always use a vertical gradient scrim (Layer 0) beneath text that sits on top of images or blurred backgrounds.",
+    "Ensure 'Storage' permission logic correctly navigates Android 13+ media storage scopes, as this is a core requirement for the folder browser.",
+    "Make sure the 4 corner buttons on the Click Wheel (MENU, Prev, Next, Play/Pause) act as real discrete tap zones overlaid on the ring."
+  ]
+}

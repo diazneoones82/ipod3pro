@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, Switch } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, Switch, Modal, TextInput } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
@@ -22,6 +22,9 @@ export default function EqualizerScreen() {
   const eq = useEQ();
   const [toast, setToast] = useState<string | null>(null);
   const [filterPickerForId, setFilterPickerForId] = useState<string | null>(null);
+  const [saveProfileOpen, setSaveProfileOpen] = useState(false);
+  const [saveProfileSlot, setSaveProfileSlot] = useState(1);
+  const [saveProfileName, setSaveProfileName] = useState('');
 
   const screenWidth = Dimensions.get('window').width;
   const graphWidth = screenWidth - SPACING.lg * 2 - 32;
@@ -42,9 +45,10 @@ export default function EqualizerScreen() {
     try {
       const res = await DocumentPicker.getDocumentAsync({ type: ['text/plain', '*/*'], copyToCacheDirectory: true });
       if (res.canceled || !res.assets?.[0]) return;
-      const uri = res.assets[0].uri;
+      const asset = res.assets[0];
+      const uri = asset.uri;
       const text = await FileSystem.readAsStringAsync(uri);
-      const ok = eq.importConfig(text);
+      const ok = eq.importConfig(text, asset.name?.replace(/\.[^.]+$/, '') || 'Imported EQ');
       if (ok) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         showToast('EQ config imported');
@@ -80,6 +84,20 @@ export default function EqualizerScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     router.push('/discover');
   }, [router]);
+
+  const openSaveProfile = useCallback((slot: number) => {
+    const current = eq.customProfiles.find((p) => p.slot === slot);
+    setSaveProfileSlot(slot);
+    setSaveProfileName(current?.name || `Custom ${slot}`);
+    setSaveProfileOpen(true);
+  }, [eq.customProfiles]);
+
+  const saveCustomProfile = useCallback(() => {
+    eq.saveCustomProfile(saveProfileSlot, saveProfileName);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    setSaveProfileOpen(false);
+    showToast(`Saved profile ${saveProfileSlot}`);
+  }, [eq, saveProfileName, saveProfileSlot]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
@@ -124,6 +142,12 @@ export default function EqualizerScreen() {
 
         {/* Graph */}
         <GlassCard style={{ marginHorizontal: SPACING.lg }} testID="eq-graph-card">
+          <View style={styles.loadedProfileRow} testID="loaded-peq-name">
+            <Ionicons name="checkmark-circle" size={13} color={COLORS.success} />
+            <Text style={styles.loadedProfileText} numberOfLines={1} ellipsizeMode="tail">
+              {eq.selectedPreset ? `Loaded: ${eq.selectedPreset}` : 'Loaded: Manual EQ'}
+            </Text>
+          </View>
           <FrequencyGraph bands={eq.bands} preamp={eq.preamp} width={graphWidth} height={140} />
           <View style={{ marginTop: SPACING.md }}>
             <CustomSlider
@@ -137,7 +161,7 @@ export default function EqualizerScreen() {
         </GlassCard>
 
         {/* Presets */}
-        <Text style={styles.sectionLabel}>Presets</Text>
+        <Text style={styles.sectionLabel}>Presets & Profiles</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.presetsRow}>
           {PRESETS.map((p) => {
             const selected = eq.selectedPreset === p.name;
@@ -150,6 +174,81 @@ export default function EqualizerScreen() {
               >
                 <Text style={[styles.presetText, selected && styles.presetTextSelected]}>{p.name}</Text>
               </Pressable>
+            );
+          })}
+        </ScrollView>
+
+        {/* Audio Effects Section */}
+        <Text style={styles.sectionLabel}>Enhancements</Text>
+        <GlassCard style={{ marginHorizontal: SPACING.lg, gap: SPACING.md }} testID="audio-enhancements-card">
+          <CustomSlider
+            testID="bass-boost-slider"
+            min={0} max={12} value={eq.bassBoostDb}
+            label="Bass Boost"
+            formatValue={(v) => `${v.toFixed(1)} dB`}
+            onChange={(v) => eq.setBassBoost(v)}
+          />
+          <CustomSlider
+            testID="loudness-slider"
+            min={0} max={12} value={eq.loudnessDb}
+            label="Loudness Enhancer"
+            formatValue={(v) => `+${v.toFixed(1)} dB`}
+            onChange={(v) => eq.setLoudness(v)}
+          />
+          <CustomSlider
+            testID="stereo-width-slider"
+            min={0} max={2.0} value={eq.stereoWidth}
+            label="Stereo Width"
+            formatValue={(v) => `${(v * 100).toFixed(0)}%`}
+            onChange={(v) => eq.setStereoWidth(v)}
+          />
+          <CustomSlider
+            testID="virtualizer-slider"
+            min={0} max={100} value={eq.virtualizerStrength}
+            label="Virtualizer / Surround"
+            formatValue={(v) => `${v.toFixed(0)}%`}
+            onChange={(v) => eq.setVirtualizer(v)}
+          />
+        </GlassCard>
+
+        <Text style={styles.sectionLabel}>Custom Profiles</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.customProfileRow}>
+          {[1, 2, 3, 4, 5].map((slot) => {
+            const profile = eq.customProfiles.find((p) => p.slot === slot);
+            return (
+              <View key={slot} style={styles.customProfileCard}>
+                <Text style={styles.customSlot}>Slot {slot}</Text>
+                <Text style={styles.customProfileName} numberOfLines={1}>{profile?.name || 'Empty'}</Text>
+                <View style={styles.customProfileActions}>
+                  <Pressable
+                    testID={`custom-eq-apply-${slot}`}
+                    disabled={!profile}
+                    onPress={() => {
+                      if (eq.applyCustomProfile(slot)) {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+                        showToast(`Loaded ${profile?.name || `profile ${slot}`}`);
+                      }
+                    }}
+                    style={[styles.customIconBtn, !profile && styles.customIconBtnDisabled]}
+                  >
+                    <Ionicons name="play" size={13} color={profile ? COLORS.onBrandPrimary : COLORS.onSurfaceTertiary} />
+                  </Pressable>
+                  <Pressable testID={`custom-eq-save-${slot}`} onPress={() => openSaveProfile(slot)} style={styles.customIconBtnSecondary}>
+                    <Ionicons name="save-outline" size={14} color={COLORS.brand} />
+                  </Pressable>
+                  <Pressable
+                    testID={`custom-eq-delete-${slot}`}
+                    disabled={!profile}
+                    onPress={() => {
+                      eq.deleteCustomProfile(slot);
+                      showToast(`Cleared slot ${slot}`);
+                    }}
+                    style={[styles.customIconBtnSecondary, !profile && styles.customIconBtnDisabled]}
+                  >
+                    <Ionicons name="trash-outline" size={14} color={profile ? COLORS.error : COLORS.onSurfaceTertiary} />
+                  </Pressable>
+                </View>
+              </View>
             );
           })}
         </ScrollView>
@@ -233,7 +332,7 @@ export default function EqualizerScreen() {
         <View style={styles.actionsRow}>
           <Pressable testID="import-eq-btn" onPress={handleImport} style={[styles.actionBtn, styles.actionPrimary]}>
             <Ionicons name="download-outline" size={16} color={COLORS.onBrandPrimary} />
-            <Text style={styles.actionPrimaryText}>Import .txt</Text>
+            <Text style={styles.actionPrimaryText}>Import</Text>
           </Pressable>
           <Pressable testID="export-eq-btn" onPress={handleExport} style={[styles.actionBtn, styles.actionSecondary]}>
             <Ionicons name="share-outline" size={16} color={COLORS.onSurface} />
@@ -272,6 +371,32 @@ export default function EqualizerScreen() {
           <Text style={styles.toastText}>{toast}</Text>
         </View>
       )}
+
+      <Modal visible={saveProfileOpen} transparent animationType="fade" onRequestClose={() => setSaveProfileOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.saveDialog}>
+            <Text style={styles.saveDialogTitle}>Save EQ Profile</Text>
+            <Text style={styles.saveDialogMeta}>Slot {saveProfileSlot}</Text>
+            <TextInput
+              testID="custom-eq-name-input"
+              value={saveProfileName}
+              onChangeText={setSaveProfileName}
+              placeholder="Profile name"
+              placeholderTextColor={COLORS.onSurfaceTertiary}
+              style={styles.saveInput}
+              maxLength={32}
+            />
+            <View style={styles.dialogActions}>
+              <Pressable onPress={() => setSaveProfileOpen(false)} style={[styles.dialogBtn, styles.actionSecondary]}>
+                <Text style={styles.actionSecondaryText}>Cancel</Text>
+              </Pressable>
+              <Pressable testID="custom-eq-confirm-save" onPress={saveCustomProfile} style={[styles.dialogBtn, styles.actionPrimary]}>
+                <Text style={styles.actionPrimaryText}>Save</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -291,6 +416,14 @@ const styles = StyleSheet.create({
   presetChipSelected: { backgroundColor: COLORS.brandTertiary, borderColor: COLORS.brand },
   presetText: { color: COLORS.onSurfaceSecondary, fontSize: 12, fontWeight: '600' },
   presetTextSelected: { color: COLORS.brand },
+  customProfileRow: { paddingHorizontal: SPACING.lg, gap: SPACING.sm, paddingBottom: 4 },
+  customProfileCard: { width: 136, padding: 10, borderRadius: RADIUS.md, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  customSlot: { color: COLORS.onSurfaceTertiary, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
+  customProfileName: { color: COLORS.onSurface, fontSize: 13, fontWeight: '700', marginTop: 4 },
+  customProfileActions: { flexDirection: 'row', gap: 6, marginTop: 10 },
+  customIconBtn: { width: 28, height: 28, borderRadius: 14, backgroundColor: COLORS.brand, alignItems: 'center', justifyContent: 'center' },
+  customIconBtnSecondary: { width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center' },
+  customIconBtnDisabled: { opacity: 0.38 },
   bandsHeader: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', paddingHorizontal: SPACING.lg },
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: RADIUS.pill, backgroundColor: COLORS.brandTertiary, marginBottom: SPACING.sm },
   addBtnText: { color: COLORS.brand, fontSize: 12, fontWeight: '700' },
@@ -316,6 +449,15 @@ const styles = StyleSheet.create({
   dspDotBypassed: { backgroundColor: COLORS.brand },
   dspDotError: { backgroundColor: COLORS.error },
   dspStatusText: { flex: 1, color: COLORS.onSurfaceSecondary, fontSize: 11, fontWeight: '600' },
+  loadedProfileRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm, minWidth: 0 },
+  loadedProfileText: { flex: 1, color: COLORS.onSurface, fontSize: 12, fontWeight: '700' },
   toast: { position: 'absolute', alignSelf: 'center', backgroundColor: 'rgba(245,158,11,0.95)', paddingHorizontal: 16, paddingVertical: 10, borderRadius: RADIUS.pill },
   toastText: { color: COLORS.onBrandPrimary, fontSize: 13, fontWeight: '700' },
+  modalBackdrop: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.58)', padding: SPACING.lg },
+  saveDialog: { width: '100%', maxWidth: 360, borderRadius: RADIUS.lg, backgroundColor: COLORS.surfaceSecondary, padding: SPACING.lg, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  saveDialogTitle: { color: COLORS.onSurface, fontSize: 18, fontWeight: '800' },
+  saveDialogMeta: { color: COLORS.onSurfaceTertiary, fontSize: 12, marginTop: 2, marginBottom: SPACING.md },
+  saveInput: { color: COLORS.onSurface, backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: RADIUS.md, paddingHorizontal: 12, paddingVertical: 11, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  dialogActions: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.md },
+  dialogBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', borderRadius: RADIUS.md, paddingVertical: 11 },
 });

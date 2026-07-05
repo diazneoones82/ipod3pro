@@ -44,13 +44,7 @@ import expo.modules.kotlin.records.Field
 import expo.modules.kotlin.records.Record
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlin.math.PI
-import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.pow
-import kotlin.math.sin
-import kotlin.math.sqrt
+import kotlin.math.*
 
 class PeqBand(
   @Field val enabled: Boolean = true,
@@ -63,7 +57,12 @@ class PeqBand(
 class PeqConfig(
   @Field val enabled: Boolean = false,
   @Field val preamp: Double = 0.0,
-  @Field val bands: List<PeqBand> = emptyList()
+  @Field val bands: List<PeqBand> = emptyList(),
+  @Field val loudnessDb: Double = 0.0,
+  @Field val stereoWidth: Double = 1.0,
+  @Field val bassBoostDb: Double = 0.0,
+  @Field val virtualizerStrength: Double = 0.0,
+  @Field val reverbPreset: Int = -1
 ) : Record
 
 object PeqDspConfigStore {
@@ -106,7 +105,16 @@ private object AppPeqConfigSource {
           q = (band["q"] as? Number)?.toDouble() ?: 1.0
         )
       } ?: emptyList()
-      PeqConfig(enabled, preamp, bands)
+      PeqConfig(
+        enabled = enabled,
+        preamp = preamp,
+        bands = bands,
+        loudnessDb = (snapshot["loudnessDb"] as? Number)?.toDouble() ?: 0.0,
+        stereoWidth = (snapshot["stereoWidth"] as? Number)?.toDouble() ?: 1.0,
+        bassBoostDb = (snapshot["bassBoostDb"] as? Number)?.toDouble() ?: 0.0,
+        virtualizerStrength = (snapshot["virtualizerStrength"] as? Number)?.toDouble() ?: 0.0,
+        reverbPreset = (snapshot["reverbPreset"] as? Number)?.toInt() ?: -1
+      )
     } catch (_: Throwable) {
       PeqDspConfigStore.current()
     }
@@ -118,7 +126,11 @@ class PeqAudioProcessor : BaseAudioProcessor() {
   private var channelCount = 2
   private var activeKey = ""
   private var filters: Array<Array<Biquad>> = emptyArray()
+  private var bassBoostFilters: Array<Biquad> = emptyArray()
   private var preampLinear = 1.0
+  private var loudnessLinear = 1.0
+  private var stereoWidth = 1.0
+  private var virtualizerStrength = 0.0
   private var activeBandCount = 0
 
   init {
@@ -141,12 +153,41 @@ class PeqAudioProcessor : BaseAudioProcessor() {
     rebuildFilters(false)
     val output = replaceOutputBuffer(inputBuffer.remaining()).order(ByteOrder.nativeOrder())
     val input = inputBuffer.order(ByteOrder.nativeOrder())
-    while (input.remaining() >= 2) {
-      for (ch in 0 until channelCount) {
-        if (input.remaining() < 2) break
-        var y = input.short.toDouble() / 32768.0 * preampLinear
-        filters.getOrNull(ch)?.forEach { y = it.process(y) }
-        output.putShort((softLimit(y) * 32767.0).toInt().coerceIn(-32768, 32767).toShort())
+
+    val invSqrt2 = 1.0 / sqrt(2.0)
+
+    while (input.remaining() >= 2 * channelCount) {
+      var l = input.short.toDouble() / 32768.0 * preampLinear
+      var r = if (channelCount > 1) input.short.toDouble() / 32768.0 * preampLinear else l
+
+      // EQ
+      filters.getOrNull(0)?.forEach { l = it.process(l) }
+      filters.getOrNull(1)?.forEach { r = it.process(r) }
+
+      // Bass Boost
+      if (bassBoostFilters.isNotEmpty()) {
+        l = bassBoostFilters[0].process(l)
+        r = bassBoostFilters[1].process(r)
+      }
+
+      // Stereo Width & Virtualizer
+      if (channelCount > 1 && (stereoWidth != 1.0 || virtualizerStrength > 0)) {
+        val mid = (l + r) * invSqrt2
+        val side = (l - r) * invSqrt2
+
+        val adjustedSide = side * stereoWidth
+
+        l = (mid + adjustedSide) * invSqrt2
+        r = (mid - adjustedSide) * invSqrt2
+      }
+
+      // Loudness
+      l *= loudnessLinear
+      r *= loudnessLinear
+
+      output.putShort((softLimit(l) * 32767.0).toInt().coerceIn(-32768, 32767).toShort())
+      if (channelCount > 1) {
+        output.putShort((softLimit(r) * 32767.0).toInt().coerceIn(-32768, 32767).toShort())
       }
     }
     AppPeqConfigSource.markProcessed(sampleRate, channelCount, activeBandCount)
@@ -154,26 +195,42 @@ class PeqAudioProcessor : BaseAudioProcessor() {
     output.flip()
   }
 
-  override fun onFlush() { filters.forEach { c -> c.forEach { it.reset() } } }
-  override fun onReset() { filters = emptyArray(); activeKey = "" }
+  override fun onFlush() {
+    filters.forEach { c -> c.forEach { it.reset() } }
+    bassBoostFilters.forEach { it.reset() }
+  }
+  override fun onReset() { filters = emptyArray(); bassBoostFilters = emptyArray(); activeKey = "" }
 
   private fun rebuildFilters(force: Boolean) {
     val cfg = AppPeqConfigSource.current()
     val key = buildString {
       append(cfg.enabled).append('|').append(cfg.preamp).append('|').append(sampleRate).append('|').append(channelCount)
+      append('|').append(cfg.loudnessDb).append('|').append(cfg.stereoWidth).append('|').append(cfg.bassBoostDb).append('|').append(cfg.virtualizerStrength)
       cfg.bands.forEach { append('|').append(it.enabled).append(',').append(it.type).append(',').append(it.freq).append(',').append(it.gain).append(',').append(it.q) }
     }
     if (!force && key == activeKey) return
     activeKey = key
+
     preampLinear = if (cfg.enabled) dbToLinear(cfg.preamp) else 1.0
+    loudnessLinear = if (cfg.enabled) dbToLinear(cfg.loudnessDb) else 1.0
+    stereoWidth = if (cfg.enabled) cfg.stereoWidth else 1.0
+    virtualizerStrength = if (cfg.enabled) cfg.virtualizerStrength else 0.0
+
     val activeBands = if (cfg.enabled) cfg.bands.filter { it.enabled } else emptyList()
     activeBandCount = activeBands.size
     filters = Array(channelCount) { activeBands.mapNotNull { Biquad.from(it, sampleRate.toDouble()) }.toTypedArray() }
+
+    bassBoostFilters = if (cfg.enabled && cfg.bassBoostDb > 0) {
+      val bb = PeqBand(enabled = true, type = "LSC", freq = 100.0, gain = cfg.bassBoostDb, q = 1.0)
+      Array(channelCount) { Biquad.from(bb, sampleRate.toDouble())!! }
+    } else {
+      emptyArray()
+    }
   }
 
   private fun softLimit(x: Double): Double {
-    if (abs(x) <= 1.0) return x
-    return if (x > 0) 1.0 - (1.0 / (x + 1.0)) else -1.0 + (1.0 / (-x + 1.0))
+    if (abs(x) <= 0.9) return x
+    return if (x > 0) 1.0 - exp(-(x - 0.9) * 10.0) * 0.1 else -1.0 + exp((x + 0.9) * 10.0) * 0.1
   }
 
   private class Biquad(private val b0: Double, private val b1: Double, private val b2: Double, private val a1: Double, private val a2: Double) {
@@ -258,12 +315,19 @@ const peqType = `  setPeqConfigAsync(config: {
       gain: number;
       q: number;
     }>;
+    loudnessDb?: number;
+    stereoWidth?: number;
+    bassBoostDb?: number;
+    virtualizerStrength?: number;
+    reverbPreset?: number;
   }): Promise<void>;
 `;
 
 patch('src/AudioModule.types.ts', (text) => {
   if (!text.includes('setPeqConfigAsync(config')) {
     text = text.replace('  setAudioModeAsync(category: Partial<AudioMode>): Promise<void>;\n', `  setAudioModeAsync(category: Partial<AudioMode>): Promise<void>;\n${peqType}`);
+  } else if (!text.includes('loudnessDb?: number;')) {
+    text = text.replace(/setPeqConfigAsync\(config: \{[^}]+\}\): Promise<void>;/s, peqType);
   }
   return text;
 });
@@ -278,14 +342,21 @@ const peqDtsType = `    setPeqConfigAsync(config: {
             gain: number;
             q: number;
         }>;
+        loudnessDb?: number;
+        stereoWidth?: number;
+        bassBoostDb?: number;
+        virtualizerStrength?: number;
+        reverbPreset?: number;
     }): Promise<void>;
 `;
 
 patch('build/AudioModule.types.d.ts', (text) => {
   if (!text.includes('setPeqConfigAsync(config')) {
     text = text.replace('    setAudioModeAsync(category: Partial<AudioMode>): Promise<void>;\n', `    setAudioModeAsync(category: Partial<AudioMode>): Promise<void>;\n${peqDtsType}`);
+  } else if (!text.includes('loudnessDb?: number;')) {
+    text = text.replace(/setPeqConfigAsync\(config: \{[^}]+\}\): Promise<void>;/s, peqDtsType);
   }
   return text;
 });
 
-console.log('[peq-patch] expo-audio native PEQ DSP patch applied');
+console.log('[peq-patch] expo-audio native PEQ DSP patch updated with audio effects');
