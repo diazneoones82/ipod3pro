@@ -11,7 +11,7 @@ import GlassCard from '@/src/components/GlassCard';
 import FrequencyGraph from '@/src/components/FrequencyGraph';
 import CustomSlider from '@/src/components/CustomSlider';
 import { useEQ } from '@/src/state/EQContext';
-import { FILTER_TYPE_LABEL, type FilterType, PRESETS } from '@/src/utils/eq-parser';
+import { FILTER_TYPE_LABEL, type FilterType, getBrandSections, REVERB_PRESETS } from '@/src/utils/eq-parser';
 import { useRouter } from 'expo-router';
 
 const FILTER_TYPES: FilterType[] = ['PK', 'LSC', 'HSC', 'LP', 'HP', 'NO', 'BP', 'AP'];
@@ -25,6 +25,8 @@ export default function EqualizerScreen() {
   const [saveProfileOpen, setSaveProfileOpen] = useState(false);
   const [saveProfileSlot, setSaveProfileSlot] = useState(1);
   const [saveProfileName, setSaveProfileName] = useState('');
+  const brandSections = getBrandSections();
+  const [selectedBrandTab, setSelectedBrandTab] = useState(brandSections[0]?.brand ?? 'Reference');
 
   const screenWidth = Dimensions.get('window').width;
   const graphWidth = screenWidth - SPACING.lg * 2 - 32;
@@ -160,23 +162,36 @@ export default function EqualizerScreen() {
           </View>
         </GlassCard>
 
-        {/* Presets */}
-        <Text style={styles.sectionLabel}>Presets & Profiles</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.presetsRow}>
-          {PRESETS.map((p) => {
-            const selected = eq.selectedPreset === p.name;
-            return (
-              <Pressable
-                key={p.name}
-                testID={`preset-${p.name}`}
-                onPress={() => { eq.applyPreset(p.name); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {}); }}
-                style={[styles.presetChip, selected && styles.presetChipSelected]}
-              >
-                <Text style={[styles.presetText, selected && styles.presetTextSelected]}>{p.name}</Text>
-              </Pressable>
-            );
-          })}
+        {/* Sound Profiles */}
+        <Text style={styles.sectionLabel}>Sound Profiles</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.brandTabRow}>
+          {brandSections.map(({ brand }) => (
+            <Pressable
+              key={brand}
+              onPress={() => setSelectedBrandTab(brand)}
+              style={[styles.brandTab, selectedBrandTab === brand && styles.brandTabSelected]}
+            >
+              <Text style={[styles.brandTabText, selectedBrandTab === brand && styles.brandTabTextSelected]}>{brand}</Text>
+            </Pressable>
+          ))}
         </ScrollView>
+        {brandSections.filter(({ brand }) => brand === selectedBrandTab).map(({ brand, profiles }) => (
+          <ScrollView key={brand} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.presetsRow}>
+            {profiles.map((p) => {
+              const selected = eq.selectedPreset === p.name;
+              return (
+                <Pressable
+                  key={`${brand}-${p.name}`}
+                  testID={`preset-${p.name}`}
+                  onPress={() => { eq.applyPreset(p.name); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {}); }}
+                  style={[styles.presetChip, selected && styles.presetChipSelected]}
+                >
+                  <Text style={[styles.presetText, selected && styles.presetTextSelected]}>{p.name}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        ))}
 
         {/* Audio Effects Section */}
         <Text style={styles.sectionLabel}>Enhancements</Text>
@@ -209,6 +224,31 @@ export default function EqualizerScreen() {
             formatValue={(v) => `${v.toFixed(0)}%`}
             onChange={(v) => eq.setVirtualizer(v)}
           />
+          {/* Reverb */}
+          <View>
+            <Text style={styles.reverbLabel}>Reverb</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, marginBottom: 8 }}>
+              {REVERB_PRESETS.map((rp) => (
+                <Pressable
+                  key={rp.value}
+                  testID={`reverb-preset-${rp.value}`}
+                  onPress={() => eq.setReverbPreset(rp.value)}
+                  style={[styles.reverbChip, eq.reverbPreset === rp.value && styles.reverbChipSelected]}
+                >
+                  <Text style={[styles.reverbChipText, eq.reverbPreset === rp.value && styles.reverbChipTextSelected]}>
+                    {rp.name}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <CustomSlider
+              testID="reverb-strength-slider"
+              min={0} max={1000} value={eq.reverbStrength}
+              label="Reverb Strength"
+              formatValue={(v) => `${(v / 10).toFixed(0)}%`}
+              onChange={(v) => eq.setReverbStrength(v)}
+            />
+          </View>
         </GlassCard>
 
         <Text style={styles.sectionLabel}>Custom Profiles</Text>
@@ -412,6 +452,11 @@ const styles = StyleSheet.create({
   enableLabel: { color: COLORS.onSurfaceSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 1.2 },
   sectionLabel: { color: COLORS.onSurfaceSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 1.4, marginTop: SPACING.xl, marginBottom: SPACING.sm, paddingHorizontal: SPACING.lg },
   presetsRow: { paddingHorizontal: SPACING.lg, gap: 8, paddingBottom: 4 },
+  brandTabRow: { paddingHorizontal: SPACING.lg, gap: 6, paddingBottom: 8 },
+  brandTab: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: RADIUS.pill, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: 'transparent' },
+  brandTabSelected: { backgroundColor: COLORS.brandTertiary, borderColor: COLORS.brand },
+  brandTabText: { color: COLORS.onSurfaceSecondary, fontSize: 12, fontWeight: '600' },
+  brandTabTextSelected: { color: COLORS.brand },
   presetChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: RADIUS.pill, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'transparent', flexShrink: 0 },
   presetChipSelected: { backgroundColor: COLORS.brandTertiary, borderColor: COLORS.brand },
   presetText: { color: COLORS.onSurfaceSecondary, fontSize: 12, fontWeight: '600' },
@@ -451,6 +496,11 @@ const styles = StyleSheet.create({
   dspStatusText: { flex: 1, color: COLORS.onSurfaceSecondary, fontSize: 11, fontWeight: '600' },
   loadedProfileRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACING.sm, minWidth: 0 },
   loadedProfileText: { flex: 1, color: COLORS.onSurface, fontSize: 12, fontWeight: '700' },
+  reverbLabel: { color: COLORS.onSurfaceSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 1.2, marginBottom: 8 },
+  reverbChip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: RADIUS.pill, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'transparent' },
+  reverbChipSelected: { backgroundColor: COLORS.brandTertiary, borderColor: COLORS.brand },
+  reverbChipText: { color: COLORS.onSurfaceSecondary, fontSize: 11, fontWeight: '600' },
+  reverbChipTextSelected: { color: COLORS.brand },
   toast: { position: 'absolute', alignSelf: 'center', backgroundColor: 'rgba(245,158,11,0.95)', paddingHorizontal: 16, paddingVertical: 10, borderRadius: RADIUS.pill },
   toastText: { color: COLORS.onBrandPrimary, fontSize: 13, fontWeight: '700' },
   modalBackdrop: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.58)', padding: SPACING.lg },

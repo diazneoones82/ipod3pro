@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  type EQBand, type EQConfig, parseEqualizerApo, serializeEqualizerApo, PRESETS, createBand,
+  type EQBand, type EQConfig, parseEqualizerApo, serializeEqualizerApo, SOUND_PROFILES, createBand,
 } from '@/src/utils/eq-parser';
 import { getNativeEqStatus, syncNativeEq, type NativeEqStatus } from '@/src/native/ShuffleEqualizer';
 
@@ -22,6 +22,7 @@ type EQContextValue = {
   bassBoostDb: number;
   virtualizerStrength: number;
   reverbPreset: number;
+  reverbStrength: number;
   selectedPreset: string | null;
   dspStatus: NativeEqStatus;
   customProfiles: CustomEQProfile[];
@@ -32,6 +33,7 @@ type EQContextValue = {
   setBassBoost: (v: number) => void;
   setVirtualizer: (v: number) => void;
   setReverbPreset: (v: number) => void;
+  setReverbStrength: (v: number) => void;
   addBand: () => void;
   updateBand: (id: string, patch: Partial<EQBand>) => void;
   removeBand: (id: string) => void;
@@ -63,6 +65,7 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
   const [bassBoostDb, setBassBoostDb] = useState(0);
   const [virtualizerStrength, setVirtualizerStrength] = useState(0);
   const [reverbPreset, setReverbPresetState] = useState(-1);
+  const [reverbStrength, setReverbStrengthState] = useState(0);
 
   const [selectedPreset, setSelectedPreset] = useState<string | null>('Flat');
   const [dspStatus, setDspStatus] = useState<NativeEqStatus>({
@@ -88,6 +91,7 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
           if (typeof parsed?.bassBoostDb === 'number') setBassBoostDb(parsed.bassBoostDb);
           if (typeof parsed?.virtualizerStrength === 'number') setVirtualizerStrength(parsed.virtualizerStrength);
           if (typeof parsed?.reverbPreset === 'number') setReverbPresetState(parsed.reverbPreset);
+          if (typeof parsed?.reverbStrength === 'number') setReverbStrengthState(parsed.reverbStrength);
           if (parsed?.selectedPreset) setSelectedPreset(parsed.selectedPreset);
         }
         const customRaw = await AsyncStorage.getItem(CUSTOM_PROFILES_KEY);
@@ -108,9 +112,9 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!hydrated) return;
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({
-      enabled, preamp, bands, selectedPreset, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset,
+      enabled, preamp, bands, selectedPreset, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset, reverbStrength,
     })).catch(() => {});
-  }, [enabled, hydrated, preamp, bands, selectedPreset, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset]);
+  }, [enabled, hydrated, preamp, bands, selectedPreset, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset, reverbStrength]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -144,7 +148,7 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
         });
     });
     return () => { canceled = true; };
-  }, [enabled, hydrated, preamp, bands, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset]);
+  }, [enabled, hydrated, preamp, bands, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset, reverbStrength]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -163,6 +167,7 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
   const setBassBoost = useCallback((v: number) => setBassBoostDb(v), []);
   const setVirtualizer = useCallback((v: number) => setVirtualizerStrength(v), []);
   const setReverbPreset = useCallback((v: number) => setReverbPresetState(v), []);
+  const setReverbStrength = useCallback((v: number) => setReverbStrengthState(v), []);
 
   const addBand = useCallback(() => {
     setBands((b) => [...b, createBand({ freq: 1000, gain: 0, q: 1.0 })]);
@@ -180,9 +185,8 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const applyPreset = useCallback((name: string) => {
-    const p = PRESETS.find((x) => x.name === name);
+    const p = SOUND_PROFILES.find((x) => x.name === name);
     if (!p) return;
-    // Recreate bands with new ids so React keys are stable
     setPreampState(p.config.preamp);
     setBands(p.config.bands.length ? p.config.bands.map((b) => createBand(b)) : [
       createBand({ type: 'LSC', freq: 80, gain: 0, q: 0.71 }),
@@ -191,6 +195,12 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
       createBand({ type: 'PK', freq: 4000, gain: 0, q: 1.0 }),
       createBand({ type: 'HSC', freq: 10000, gain: 0, q: 0.71 }),
     ]);
+    setLoudnessDb(p.loudnessDb);
+    setStereoWidthState(p.stereoWidth);
+    setBassBoostDb(p.bassBoostDb);
+    setVirtualizerStrength(p.virtualizerStrength);
+    setReverbPresetState(p.reverbPreset);
+    setReverbStrengthState(p.reverbStrength);
     setSelectedPreset(name);
   }, []);
 
@@ -229,6 +239,7 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
     setBassBoostDb(0);
     setVirtualizerStrength(0);
     setReverbPresetState(-1);
+    setReverbStrengthState(0);
   }, [applyPreset]);
 
   const importConfig = useCallback((text: string, profileName?: string): boolean => {
@@ -249,12 +260,12 @@ export function EQProvider({ children }: { children: React.ReactNode }) {
   }, [preamp, bands]);
 
   const value = useMemo(() => ({
-    enabled, preamp, bands, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset, selectedPreset, dspStatus, customProfiles,
-    setEnabled, setPreamp, setLoudness, setStereoWidth, setBassBoost, setVirtualizer, setReverbPreset,
+    enabled, preamp, bands, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset, reverbStrength, selectedPreset, dspStatus, customProfiles,
+    setEnabled, setPreamp, setLoudness, setStereoWidth, setBassBoost, setVirtualizer, setReverbPreset, setReverbStrength,
     addBand, updateBand, removeBand,
     applyPreset, saveCustomProfile, applyCustomProfile, deleteCustomProfile, resetAll, importConfig, exportConfig,
-  }), [enabled, preamp, bands, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset, selectedPreset, dspStatus, customProfiles,
-       setEnabled, setPreamp, setLoudness, setStereoWidth, setBassBoost, setVirtualizer, setReverbPreset,
+  }), [enabled, preamp, bands, loudnessDb, stereoWidth, bassBoostDb, virtualizerStrength, reverbPreset, reverbStrength, selectedPreset, dspStatus, customProfiles,
+       setEnabled, setPreamp, setLoudness, setStereoWidth, setBassBoost, setVirtualizer, setReverbPreset, setReverbStrength,
        addBand, updateBand, removeBand,
        applyPreset, saveCustomProfile, applyCustomProfile, deleteCustomProfile, resetAll, importConfig, exportConfig]);
 

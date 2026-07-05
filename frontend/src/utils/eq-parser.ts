@@ -112,14 +112,40 @@ export function createBand(part: Partial<EQBand>): EQBand {
   return { ...defaultBand(), ...part, id: part.id ?? uid() };
 }
 
-// Built-in presets
-export const PRESETS: { name: string; config: EQConfig }[] = [
+// Sound profile with audio effects parameters
+export type SoundProfile = {
+  name: string;
+  brand: string;
+  config: EQConfig;
+  bassBoostDb: number;
+  virtualizerStrength: number;
+  reverbPreset: number;
+  reverbStrength: number;
+  loudnessDb: number;
+  stereoWidth: number;
+};
+
+export const REVERB_PRESETS = [
+  { name: 'None', value: -1 },
+  { name: 'Small Room', value: 0 },
+  { name: 'Medium Room', value: 1 },
+  { name: 'Large Room', value: 2 },
+  { name: 'Medium Hall', value: 3 },
+  { name: 'Large Hall', value: 4 },
+  { name: 'Plate', value: 5 },
+];
+
+// Built-in sound profiles with audio effects
+export const SOUND_PROFILES: SoundProfile[] = [
   {
     name: 'Flat',
+    brand: 'Reference',
     config: { preamp: 0, bands: [] },
+    bassBoostDb: 0, virtualizerStrength: 0, reverbPreset: -1, reverbStrength: 0, loudnessDb: 0, stereoWidth: 1.0,
   },
   {
     name: 'Bass Boost',
+    brand: 'FX',
     config: {
       preamp: -3,
       bands: [
@@ -127,9 +153,11 @@ export const PRESETS: { name: string; config: EQConfig }[] = [
         createBand({ type: 'PK', freq: 200, gain: 3, q: 1.0 }),
       ],
     },
+    bassBoostDb: 6, virtualizerStrength: 0, reverbPreset: -1, reverbStrength: 0, loudnessDb: 2, stereoWidth: 1.0,
   },
   {
     name: 'Vocal',
+    brand: 'FX',
     config: {
       preamp: -2,
       bands: [
@@ -138,9 +166,11 @@ export const PRESETS: { name: string; config: EQConfig }[] = [
         createBand({ type: 'HSC', freq: 8000, gain: 2, q: 0.71 }),
       ],
     },
+    bassBoostDb: 0, virtualizerStrength: 0, reverbPreset: -1, reverbStrength: 0, loudnessDb: 3, stereoWidth: 1.0,
   },
   {
     name: 'Rock',
+    brand: 'FX',
     config: {
       preamp: -3,
       bands: [
@@ -150,9 +180,11 @@ export const PRESETS: { name: string; config: EQConfig }[] = [
         createBand({ type: 'HSC', freq: 10000, gain: 3, q: 0.71 }),
       ],
     },
+    bassBoostDb: 3, virtualizerStrength: 20, reverbPreset: 1, reverbStrength: 150, loudnessDb: 2, stereoWidth: 1.2,
   },
   {
     name: 'Classical',
+    brand: 'FX',
     config: {
       preamp: -1,
       bands: [
@@ -161,9 +193,11 @@ export const PRESETS: { name: string; config: EQConfig }[] = [
         createBand({ type: 'HSC', freq: 8000, gain: 3, q: 0.71 }),
       ],
     },
+    bassBoostDb: 0, virtualizerStrength: 40, reverbPreset: 4, reverbStrength: 300, loudnessDb: 1, stereoWidth: 1.3,
   },
   {
     name: 'Electronic',
+    brand: 'FX',
     config: {
       preamp: -4,
       bands: [
@@ -173,9 +207,11 @@ export const PRESETS: { name: string; config: EQConfig }[] = [
         createBand({ type: 'HSC', freq: 12000, gain: 4, q: 0.71 }),
       ],
     },
+    bassBoostDb: 5, virtualizerStrength: 30, reverbPreset: 2, reverbStrength: 200, loudnessDb: 3, stereoWidth: 1.4,
   },
   {
-    name: 'Dolby Surround',
+    name: 'Atmos',
+    brand: 'Dolby',
     config: {
       preamp: -4,
       bands: [
@@ -186,9 +222,26 @@ export const PRESETS: { name: string; config: EQConfig }[] = [
         createBand({ type: 'HSC', freq: 12000, gain: 4.5, q: 0.7 }),
       ],
     },
+    bassBoostDb: 5, virtualizerStrength: 80, reverbPreset: 4, reverbStrength: 300, loudnessDb: 2, stereoWidth: 1.5,
   },
   {
-    name: 'JBL Signature',
+    name: 'Cinema',
+    brand: 'Dolby',
+    config: {
+      preamp: -5,
+      bands: [
+        createBand({ type: 'LSC', freq: 40, gain: 5.0, q: 0.7 }),
+        createBand({ type: 'PK', freq: 150, gain: -1, q: 1.2 }),
+        createBand({ type: 'PK', freq: 2000, gain: 2.0, q: 1.0 }),
+        createBand({ type: 'PK', freq: 6000, gain: 3.5, q: 0.9 }),
+        createBand({ type: 'HSC', freq: 14000, gain: 4.0, q: 0.7 }),
+      ],
+    },
+    bassBoostDb: 6, virtualizerStrength: 90, reverbPreset: 4, reverbStrength: 500, loudnessDb: 3, stereoWidth: 1.8,
+  },
+  {
+    name: 'Signature',
+    brand: 'JBL',
     config: {
       preamp: -5,
       bands: [
@@ -198,9 +251,26 @@ export const PRESETS: { name: string; config: EQConfig }[] = [
         createBand({ type: 'HSC', freq: 10000, gain: 4.0, q: 0.7 }),
       ],
     },
+    bassBoostDb: 8, virtualizerStrength: 40, reverbPreset: 1, reverbStrength: 200, loudnessDb: 4, stereoWidth: 1.3,
   },
   {
-    name: 'Sony ClearAudio+',
+    name: 'Quantum',
+    brand: 'JBL',
+    config: {
+      preamp: -4,
+      bands: [
+        createBand({ type: 'LSC', freq: 55, gain: 5.0, q: 0.7 }),
+        createBand({ type: 'PK', freq: 200, gain: 1.0, q: 1.0 }),
+        createBand({ type: 'PK', freq: 3000, gain: 3.0, q: 1.0 }),
+        createBand({ type: 'PK', freq: 8000, gain: 4.0, q: 1.2 }),
+        createBand({ type: 'HSC', freq: 12000, gain: 3.0, q: 0.7 }),
+      ],
+    },
+    bassBoostDb: 5, virtualizerStrength: 70, reverbPreset: 0, reverbStrength: 150, loudnessDb: 2, stereoWidth: 1.6,
+  },
+  {
+    name: 'Hi-Res',
+    brand: 'Sony',
     config: {
       preamp: -3,
       bands: [
@@ -210,5 +280,96 @@ export const PRESETS: { name: string; config: EQConfig }[] = [
         createBand({ type: 'HSC', freq: 15000, gain: 3.0, q: 0.7 }),
       ],
     },
+    bassBoostDb: 2, virtualizerStrength: 30, reverbPreset: 0, reverbStrength: 100, loudnessDb: 1, stereoWidth: 1.1,
+  },
+  {
+    name: '360 Reality',
+    brand: 'Sony',
+    config: {
+      preamp: -3,
+      bands: [
+        createBand({ type: 'LSC', freq: 45, gain: 3.0, q: 0.7 }),
+        createBand({ type: 'PK', freq: 200, gain: 1.0, q: 1.0 }),
+        createBand({ type: 'PK', freq: 2500, gain: 2.5, q: 0.8 }),
+        createBand({ type: 'PK', freq: 8000, gain: 2.0, q: 1.0 }),
+        createBand({ type: 'HSC', freq: 16000, gain: 2.5, q: 0.7 }),
+      ],
+    },
+    bassBoostDb: 4, virtualizerStrength: 95, reverbPreset: 4, reverbStrength: 400, loudnessDb: 2, stereoWidth: 2.0,
+  },
+  {
+    name: 'Signature',
+    brand: 'Bose',
+    config: {
+      preamp: -3,
+      bands: [
+        createBand({ type: 'PK', freq: 80, gain: 3.0, q: 0.8 }),
+        createBand({ type: 'PK', freq: 400, gain: 2.0, q: 1.0 }),
+        createBand({ type: 'PK', freq: 2000, gain: 3.0, q: 1.0 }),
+        createBand({ type: 'PK', freq: 6000, gain: 2.0, q: 1.0 }),
+        createBand({ type: 'HSC', freq: 12000, gain: 2.5, q: 0.7 }),
+      ],
+    },
+    bassBoostDb: 5, virtualizerStrength: 40, reverbPreset: 1, reverbStrength: 200, loudnessDb: 3, stereoWidth: 1.25,
+  },
+  {
+    name: 'HD Studio',
+    brand: 'Sennheiser',
+    config: {
+      preamp: -1,
+      bands: [
+        createBand({ type: 'PK', freq: 100, gain: 1.0, q: 0.8 }),
+        createBand({ type: 'PK', freq: 1000, gain: 1.0, q: 1.0 }),
+        createBand({ type: 'PK', freq: 4000, gain: 1.0, q: 1.0 }),
+        createBand({ type: 'HSC', freq: 10000, gain: 1.5, q: 0.7 }),
+      ],
+    },
+    bassBoostDb: 1, virtualizerStrength: 20, reverbPreset: -1, reverbStrength: 0, loudnessDb: 1, stereoWidth: 1.0,
+  },
+  {
+    name: 'Signature',
+    brand: 'Bang & Olufsen',
+    config: {
+      preamp: -3,
+      bands: [
+        createBand({ type: 'LSC', freq: 50, gain: 4.0, q: 0.7 }),
+        createBand({ type: 'PK', freq: 200, gain: 2.5, q: 1.0 }),
+        createBand({ type: 'PK', freq: 1500, gain: 2.0, q: 1.0 }),
+        createBand({ type: 'PK', freq: 5000, gain: 2.5, q: 1.0 }),
+        createBand({ type: 'HSC', freq: 12000, gain: 2.0, q: 0.7 }),
+      ],
+    },
+    bassBoostDb: 4, virtualizerStrength: 45, reverbPreset: 3, reverbStrength: 300, loudnessDb: 2, stereoWidth: 1.35,
+  },
+  {
+    name: 'Signature',
+    brand: 'Harman Kardon',
+    config: {
+      preamp: -2,
+      bands: [
+        createBand({ type: 'PK', freq: 80, gain: 2.0, q: 0.8 }),
+        createBand({ type: 'PK', freq: 500, gain: 3.0, q: 1.0 }),
+        createBand({ type: 'PK', freq: 2000, gain: 2.0, q: 1.0 }),
+        createBand({ type: 'PK', freq: 8000, gain: 1.5, q: 1.0 }),
+        createBand({ type: 'HSC', freq: 14000, gain: 2.0, q: 0.7 }),
+      ],
+    },
+    bassBoostDb: 3, virtualizerStrength: 35, reverbPreset: 1, reverbStrength: 250, loudnessDb: 2, stereoWidth: 1.2,
   },
 ];
+
+// Legacy flat presets list for backward compat
+export const PRESETS: { name: string; config: EQConfig }[] = SOUND_PROFILES.map((p) => ({
+  name: p.name,
+  config: p.config,
+}));
+
+// Group profiles by brand
+export function getBrandSections() {
+  const brands = new Map<string, SoundProfile[]>();
+  for (const p of SOUND_PROFILES) {
+    if (!brands.has(p.brand)) brands.set(p.brand, []);
+    brands.get(p.brand)!.push(p);
+  }
+  return Array.from(brands.entries()).map(([brand, profiles]) => ({ brand, profiles }));
+}
