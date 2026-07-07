@@ -15,6 +15,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
+import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.io.File
@@ -249,6 +250,76 @@ class ShuffleEqualizerModule(private val reactContext: ReactApplicationContext) 
   }
 
   @ReactMethod
+  fun readAudioTags(path: String, promise: Promise) {
+    try {
+      val filePath = if (path.startsWith("file://")) path.removePrefix("file://") else path
+      val file = File(filePath)
+      if (!file.exists()) {
+        promise.reject("E_FILE_NOT_FOUND", "Audio file not found: $path")
+        return
+      }
+      val audioFile = org.jaudiotagger.audio.AudioFileIO.read(file)
+      val tag = audioFile.tagOrCreateAndSetDefault
+      val art = tag.firstArtwork
+      val result = Arguments.createMap()
+      putClean(result, "title", tag.getFirst(org.jaudiotagger.tag.FieldKey.TITLE))
+      putClean(result, "artist", tag.getFirst(org.jaudiotagger.tag.FieldKey.ARTIST))
+      putClean(result, "album", tag.getFirst(org.jaudiotagger.tag.FieldKey.ALBUM))
+      putClean(result, "albumArtist", tag.getFirst(org.jaudiotagger.tag.FieldKey.ALBUM_ARTIST))
+      putClean(result, "genre", tag.getFirst(org.jaudiotagger.tag.FieldKey.GENRE))
+      putClean(result, "year", tag.getFirst(org.jaudiotagger.tag.FieldKey.YEAR))
+      putClean(result, "trackNumber", tag.getFirst(org.jaudiotagger.tag.FieldKey.TRACK))
+      putClean(result, "composer", tag.getFirst(org.jaudiotagger.tag.FieldKey.COMPOSER))
+      putClean(result, "lyrics", tag.getFirst(org.jaudiotagger.tag.FieldKey.LYRICS))
+      if (art != null) {
+        result.putString("artworkMime", art.mimeType)
+      }
+      promise.resolve(result)
+    } catch (e: Throwable) {
+      promise.reject("E_READ_TAGS", e.message ?: "Failed to read audio tags", e)
+    }
+  }
+
+  @ReactMethod
+  fun writeAudioTags(path: String, tags: ReadableMap, promise: Promise) {
+    try {
+      val filePath = if (path.startsWith("file://")) path.removePrefix("file://") else path
+      val file = File(filePath)
+      if (!file.exists()) {
+        promise.reject("E_FILE_NOT_FOUND", "Audio file not found: $path")
+        return
+      }
+      val audioFile = org.jaudiotagger.audio.AudioFileIO.read(file)
+      val tag = audioFile.tagOrCreateAndSetDefault
+
+      if (tags.hasKey("title")) tag.setField(org.jaudiotagger.tag.FieldKey.TITLE, tags.getString("title") ?: "")
+      if (tags.hasKey("artist")) tag.setField(org.jaudiotagger.tag.FieldKey.ARTIST, tags.getString("artist") ?: "")
+      if (tags.hasKey("album")) tag.setField(org.jaudiotagger.tag.FieldKey.ALBUM, tags.getString("album") ?: "")
+      if (tags.hasKey("albumArtist")) tag.setField(org.jaudiotagger.tag.FieldKey.ALBUM_ARTIST, tags.getString("albumArtist") ?: "")
+      if (tags.hasKey("genre")) tag.setField(org.jaudiotagger.tag.FieldKey.GENRE, tags.getString("genre") ?: "")
+      if (tags.hasKey("year")) tag.setField(org.jaudiotagger.tag.FieldKey.YEAR, tags.getString("year") ?: "")
+      if (tags.hasKey("trackNumber")) tag.setField(org.jaudiotagger.tag.FieldKey.TRACK, tags.getString("trackNumber") ?: "")
+      if (tags.hasKey("composer")) tag.setField(org.jaudiotagger.tag.FieldKey.COMPOSER, tags.getString("composer") ?: "")
+      if (tags.hasKey("lyrics")) tag.setField(org.jaudiotagger.tag.FieldKey.LYRICS, tags.getString("lyrics") ?: "")
+
+      audioFile.commit()
+
+      if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
+        android.media.MediaScannerConnection.scanFile(
+          reactContext,
+          arrayOf(filePath),
+          null,
+          null
+        )
+      }
+
+      promise.resolve(true)
+    } catch (e: Throwable) {
+      promise.reject("E_WRITE_TAGS", e.message ?: "Failed to write audio tags", e)
+    }
+  }
+
+  @ReactMethod
   fun addListener(eventName: String) {
     // Required for React Native event emitter bookkeeping.
   }
@@ -270,6 +341,11 @@ class ShuffleEqualizerModule(private val reactContext: ReactApplicationContext) 
     putInt("lastSampleRate", (dsp["lastSampleRate"] as? Number)?.toInt() ?: 0)
     putInt("lastChannelCount", (dsp["lastChannelCount"] as? Number)?.toInt() ?: 0)
     putInt("lastActiveBandCount", (dsp["lastActiveBandCount"] as? Number)?.toInt() ?: 0)
+  }
+
+  private fun putClean(map: WritableMap, key: String, value: String?) {
+    val text = value?.trim().orEmpty()
+    if (text.isNotEmpty() && text != "<unknown>") map.putString(key, text)
   }
 
   private fun putCleanString(map: WritableMap, key: String, value: String?) {

@@ -2,21 +2,26 @@ import React, { useMemo, useState } from 'react';
 import { View, StyleSheet, LayoutChangeEvent } from 'react-native';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { runOnJS, useSharedValue } from 'react-native-reanimated';
+import Svg, { Path, Defs, LinearGradient, Stop, ClipPath, Rect } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
+
 type Props = {
-  // 0..1
   progress: number;
   duration: number;
-  // seed for deterministic waveform (e.g. track id)
   seed: string;
   onSeek: (sec: number) => void;
   testID?: string;
 };
 
-const BAR_COUNT = 56;
-const PROGRESS_COLORS = ['#FF2BD6', '#8B5CFF', '#00F5FF', '#20FF9F', '#B6FF00', '#FFD400', '#FF5C00'];
+const POINT_COUNT = 100;
+const WAVE_HEIGHT = 36;
+const STROKE_WIDTH = 3;
+const GLOW_WIDTH = 10;
+const PLAYHEAD_RADIUS = 5;
+const VIBRANT_COLORS = ['#FF2BD6', '#8B5CFF', '#00F5FF', '#20FF9F', '#B6FF00', '#FFD400', '#FF5C00'];
+const GLOW_COLORS = ['rgba(255,43,214,0.35)', 'rgba(139,92,255,0.35)', 'rgba(0,245,255,0.35)', 'rgba(32,255,159,0.35)', 'rgba(182,255,0,0.35)', 'rgba(255,212,0,0.35)', 'rgba(255,92,0,0.35)'];
+const GRADIENT_STOPS = VIBRANT_COLORS.map((c, i) => ({ color: c, offset: `${Math.round((i / (VIBRANT_COLORS.length - 1)) * 100)}%` }));
 
-// Simple deterministic PRNG from string seed
 function hashStr(s: string): number {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < s.length; i++) {
@@ -25,6 +30,7 @@ function hashStr(s: string): number {
   }
   return h >>> 0;
 }
+
 function mulberry32(seed: number) {
   let a = seed;
   return function () {
@@ -35,22 +41,39 @@ function mulberry32(seed: number) {
   };
 }
 
+function generateWave(seed: string, count: number): number[] {
+  const rng = mulberry32(hashStr(seed || 'empty') || 1);
+  const arr: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const t = i / (count - 1);
+    const env = 0.55 + 0.4 * Math.sin(t * Math.PI);
+    const noise = 0.35 + rng() * 0.65;
+    arr.push(Math.max(0.18, Math.min(1, env * noise)));
+  }
+  return arr;
+}
+
+function buildWavePath(heights: number[], width: number): string {
+  if (width <= 0 || heights.length < 2) return '';
+  const stepX = Math.max(1, width / (heights.length - 1));
+  const midY = WAVE_HEIGHT / 2;
+  const range = (WAVE_HEIGHT - STROKE_WIDTH - 4) / 2;
+  const parts: string[] = [];
+  for (let i = 0; i < heights.length; i++) {
+    const x = i * stepX;
+    const y = midY + (heights[i] - 0.5) * range;
+    parts.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`);
+  }
+  return parts.join(' ');
+}
+
 export default function WaveformScrubber({ progress, duration, seed, onSeek, testID }: Props) {
   const [width, setWidth] = useState(0);
   const widthSv = useSharedValue(0);
 
-  const bars = useMemo(() => {
-    const rng = mulberry32(hashStr(seed || 'empty') || 1);
-    const arr: number[] = [];
-    // generate a smooth envelope using sine + noise
-    for (let i = 0; i < BAR_COUNT; i++) {
-      const t = i / (BAR_COUNT - 1);
-      const env = 0.55 + 0.4 * Math.sin(t * Math.PI); // arch shape
-      const noise = 0.35 + rng() * 0.65;
-      arr.push(Math.max(0.18, Math.min(1, env * noise)));
-    }
-    return arr;
-  }, [seed]);
+  const heights = useMemo(() => generateWave(seed || 'empty', POINT_COUNT), [seed]);
+
+  const fullPath = useMemo(() => buildWavePath(heights, width), [heights, width]);
 
   const onLayout = (e: LayoutChangeEvent) => {
     const w = e.nativeEvent.layout.width;
@@ -81,31 +104,83 @@ export default function WaveformScrubber({ progress, duration, seed, onSeek, tes
     });
 
   const clampedProgress = Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
-  const filledCount = clampedProgress > 0 ? Math.max(1, Math.round(clampedProgress * BAR_COUNT)) : 0;
+  const clipWidth = clampedProgress * (width || 1);
 
   return (
     <GestureDetector gesture={pan}>
       <View style={styles.wrap} onLayout={onLayout} testID={testID} collapsable={false}>
-        {bars.map((h, i) => {
-          const filled = i < filledCount;
-          const color = PROGRESS_COLORS[i % PROGRESS_COLORS.length];
-          return (
-            <View
-              key={i}
-              style={[
-                styles.bar,
-                {
-                  height: 8 + h * 24,
-                  backgroundColor: color,
-                  opacity: filled ? 1 : 0.32,
-                  shadowColor: color,
-                  shadowOpacity: filled ? 0.75 : 0.16,
-                  shadowRadius: filled ? 5 : 2,
-                },
-              ]}
+        {width > 0 && (
+          <Svg width={width} height={WAVE_HEIGHT} viewBox={`0 0 ${width} ${WAVE_HEIGHT}`}>
+            <Defs>
+              <LinearGradient id="waveGrad" x1="0" y1="0" x2="1" y2="0">
+                {GRADIENT_STOPS.map((s, i) => (
+                  <Stop key={i} offset={s.offset} stopColor={s.color} stopOpacity={0.18} />
+                ))}
+              </LinearGradient>
+              <LinearGradient id="waveGradFilled" x1="0" y1="0" x2="1" y2="0">
+                {GRADIENT_STOPS.map((s, i) => (
+                  <Stop key={i} offset={s.offset} stopColor={s.color} stopOpacity={1} />
+                ))}
+              </LinearGradient>
+              <LinearGradient id="waveGradGlow" x1="0" y1="0" x2="1" y2="0">
+                {GLOW_COLORS.map((c, i) => (
+                  <Stop key={i} offset={GRADIENT_STOPS[i].offset} stopColor={c} stopOpacity={1} />
+                ))}
+              </LinearGradient>
+              <ClipPath id="clip">
+                <Rect x={0} y={0} width={clipWidth} height={WAVE_HEIGHT} />
+              </ClipPath>
+            </Defs>
+
+            {/* unfilled — very subtle */}
+            <Path
+              d={fullPath}
+              stroke="url(#waveGrad)"
+              strokeWidth={2}
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
             />
-          );
-        })}
+
+            {/* glow behind filled section */}
+            <Path
+              d={fullPath}
+              stroke="url(#waveGradGlow)"
+              strokeWidth={GLOW_WIDTH}
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              clipPath="url(#clip)"
+            />
+
+            {/* filled section */}
+            <Path
+              d={fullPath}
+              stroke="url(#waveGradFilled)"
+              strokeWidth={STROKE_WIDTH}
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              clipPath="url(#clip)"
+            />
+
+            {/* playhead dot */}
+            {clampedProgress > 0 && clampedProgress < 1 && (
+              <Path
+                d={(() => {
+                  const idx = Math.round(clampedProgress * (heights.length - 1));
+                  const stepX = Math.max(1, width / (heights.length - 1));
+                  const x = idx * stepX;
+                  const midY = WAVE_HEIGHT / 2;
+                  const range = (WAVE_HEIGHT - STROKE_WIDTH - 4) / 2;
+                  const y = midY + (heights[idx] - 0.5) * range;
+                  return `M ${x} ${y - PLAYHEAD_RADIUS} A ${PLAYHEAD_RADIUS} ${PLAYHEAD_RADIUS} 0 1 1 ${x} ${y + PLAYHEAD_RADIUS} A ${PLAYHEAD_RADIUS} ${PLAYHEAD_RADIUS} 0 1 1 ${x} ${y - PLAYHEAD_RADIUS}`;
+                })()}
+                fill="#FFFFFF"
+              />
+            )}
+          </Svg>
+        )}
       </View>
     </GestureDetector>
   );
@@ -113,14 +188,9 @@ export default function WaveformScrubber({ progress, duration, seed, onSeek, tes
 
 const styles = StyleSheet.create({
   wrap: {
-    flexDirection: 'row',
+    height: WAVE_HEIGHT + 8,
+    justifyContent: 'center',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    height: 40,
-    gap: 2,
-  },
-  bar: {
-    flex: 1,
-    borderRadius: 1.5,
+    paddingVertical: 4,
   },
 });

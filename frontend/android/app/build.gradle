@@ -36,7 +36,7 @@ react {
 
     /* Bundling */
     //   A list containing the node command and its flags. Default is just 'node'.
-    // nodeExecutableAndArgs = ["node"]
+    nodeExecutableAndArgs = ["D:/opencode/ipod3pro/node.exe"]
 
     //
     //   The path to the CLI configuration file. Default is empty.
@@ -163,6 +163,10 @@ dependencies {
     implementation("androidx.media:media:1.7.0")
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-common:1.8.0")
+    implementation("androidx.media3:media3-session:1.8.0")
+    implementation("com.google.android.gms:play-services-cast-framework:21.5.0")
+    implementation("androidx.mediarouter:mediarouter:1.7.0")
+    implementation("net.jthink:jaudiotagger:3.0.1")
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";

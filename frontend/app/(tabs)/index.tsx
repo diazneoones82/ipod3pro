@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Platform, Modal, ScrollView, ActivityIndicator, TextInput, FlatList, Linking, Alert, Vibration, Animated, Easing, Share, useWindowDimensions } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, Pressable, Platform, Modal, ScrollView, ActivityIndicator, TextInput, FlatList, Linking, Alert, Vibration, Animated, Easing, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,8 +13,9 @@ import { COLORS, SPACING, RADIUS } from '@/src/theme/tokens';
 import ClickWheel, { type ClickWheelAction } from '@/src/components/ClickWheel';
 import WaveformScrubber from '@/src/components/WaveformScrubber';
 import SleepTimerSheet from '@/src/components/SleepTimerSheet';
+import CastButton from '@/src/components/CastButton';
 import { usePlayer, currentTrack, type VisualizerMode } from '@/src/state/PlayerContext';
-import { fetchAlbumArt, fetchLyrics } from '@/src/utils/api';
+import { fetchAlbumArt } from '@/src/utils/api';
 import { cleanToken, trackLookupParts } from '@/src/utils/track-lookup';
 
 const BG_IMAGE = 'https://images.pexels.com/photos/9807251/pexels-photo-9807251.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940';
@@ -57,70 +58,6 @@ function scoreCandidate(candidate: { title?: string; artist?: string; album?: st
   score += expected.album ? similarity(candidate.album, expected.album) * 0.10 : 0.04;
   score += durationScore(candidate.durationMs, expected.duration) * 0.08;
   return score;
-}
-
-const devanagariIndependentVowels: Record<string, string> = {
-  'अ': 'a', 'आ': 'a', 'इ': 'i', 'ई': 'i', 'उ': 'u', 'ऊ': 'u', 'ऋ': 'ri',
-  'ए': 'e', 'ऐ': 'ai', 'ओ': 'o', 'औ': 'au',
-};
-
-const devanagariConsonants: Record<string, string> = {
-  'क': 'k', 'ख': 'kh', 'ग': 'g', 'घ': 'gh', 'ङ': 'ng',
-  'च': 'ch', 'छ': 'chh', 'ज': 'j', 'झ': 'jh', 'ञ': 'ny',
-  'ट': 't', 'ठ': 'th', 'ड': 'd', 'ढ': 'dh', 'ण': 'n',
-  'त': 't', 'थ': 'th', 'द': 'd', 'ध': 'dh', 'न': 'n',
-  'प': 'p', 'फ': 'ph', 'ब': 'b', 'भ': 'bh', 'म': 'm',
-  'य': 'y', 'र': 'r', 'ल': 'l', 'व': 'v',
-  'श': 'sh', 'ष': 'sh', 'स': 's', 'ह': 'h',
-  'ळ': 'l', 'क्ष': 'ksh', 'ज्ञ': 'gy',
-  'क़': 'q', 'ख़': 'kh', 'ग़': 'gh', 'ज़': 'z', 'ड़': 'd', 'ढ़': 'dh', 'फ़': 'f',
-};
-
-const devanagariVowelMarks: Record<string, string> = {
-  'ा': 'a', 'ि': 'i', 'ी': 'i', 'ु': 'u', 'ू': 'u', 'ृ': 'ri',
-  'े': 'e', 'ै': 'ai', 'ो': 'o', 'ौ': 'au',
-};
-
-const devanagariSigns: Record<string, string> = {
-  'ं': 'n', 'ँ': 'n', 'ः': 'h', '़': '', 'ॅ': 'e', 'ॉ': 'o', '्': '',
-  '०': '0', '१': '1', '२': '2', '३': '3', '४': '4', '५': '5', '६': '6', '७': '7', '८': '8', '९': '9',
-};
-
-function romanizeDevanagari(input: string): string {
-  let out = '';
-  for (let i = 0; i < input.length; i += 1) {
-    const ch = input[i];
-    const pair = input.slice(i, i + 2);
-    const consonant = devanagariConsonants[pair] ? pair : ch;
-    if (devanagariConsonants[consonant]) {
-      const next = input[i + consonant.length];
-      if (devanagariVowelMarks[next] != null) {
-        out += devanagariConsonants[consonant] + devanagariVowelMarks[next];
-        i += consonant.length;
-      } else if (next === '्') {
-        out += devanagariConsonants[consonant];
-        i += consonant.length;
-      } else {
-        out += devanagariConsonants[consonant] + 'a';
-        i += consonant.length - 1;
-      }
-      continue;
-    }
-    out += devanagariIndependentVowels[ch] ?? devanagariVowelMarks[ch] ?? devanagariSigns[ch] ?? ch;
-  }
-  return out
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function romanizeLyricsText(input: string): string {
-  if (!/[\u0900-\u097F]/.test(input)) return input;
-  return input
-    .split('\n')
-    .map((line) => romanizeDevanagari(line))
-    .join('\n')
-    .replace(/[ \t]+\n/g, '\n')
-    .trim();
 }
 
 function fmtTime(sec: number): string {
@@ -243,20 +180,15 @@ export default function PlayerScreen() {
   const [wheelMode, setWheelMode] = useState<'volume' | 'track'>('volume');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [sleepOpen, setSleepOpen] = useState(false);
-  const [lyricsOpen, setLyricsOpen] = useState(false);
-  const [lyricsLoading, setLyricsLoading] = useState(false);
-  const [lyricsText, setLyricsText] = useState('');
-  const [lyricsTitle, setLyricsTitle] = useState('');
-  const [lyricsArtist, setLyricsArtist] = useState('');
-  const [lyricsAlbum, setLyricsAlbum] = useState('');
-  const [lyricsSource, setLyricsSource] = useState('');
-  const [lyricsTranslating, setLyricsTranslating] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [playlistOpen, setPlaylistOpen] = useState(false);
   const [bluetoothOpen, setBluetoothOpen] = useState(false);
+  const [castOpen, setCastOpen] = useState(false);
   const [playlistName, setPlaylistName] = useState('');
   const [artLoading, setArtLoading] = useState(false);
+  const scrollX = useRef(new Animated.Value(0)).current;
+  const carouselRef = useRef<any>(null);
 
   const isExpandedWindow = windowWidth >= 600;
   const horizontalPadding = isExpandedWindow ? 28 : SPACING.lg;
@@ -381,58 +313,14 @@ export default function PlayerScreen() {
   const lyricArtist = useMemo(() => track ? trackLookupParts(track).artist : undefined, [track]);
   const lyricAlbum = useMemo(() => track ? trackLookupParts(track).album : undefined, [track]);
 
-  const openLyrics = useCallback(async () => {
-    if (!lyricQuery) return;
-    setLyricsOpen(true);
-    setLyricsLoading(true);
-    setLyricsText('');
-    setLyricsTitle(lyricQuery);
-    setLyricsArtist(lyricArtist || '');
-    setLyricsAlbum(lyricAlbum || '');
-    setLyricsSource('');
-    try {
-      const found = await fetchLyrics({ track: lyricQuery, artist: lyricArtist, album: lyricAlbum, duration: track?.duration });
-      setLyricsTitle(found.title || lyricQuery);
-      setLyricsArtist(found.artist || lyricArtist || '');
-      setLyricsAlbum(found.album || '');
-      setLyricsSource(found.source);
-      setLyricsText(found.plainLyrics || found.syncedLyrics || 'No free lyrics found for this song.');
-    } catch {
-      try {
-        const params = new URLSearchParams({ track_name: lyricQuery });
-        if (lyricArtist) params.set('artist_name', lyricArtist);
-        if (lyricAlbum) params.set('album_name', lyricAlbum);
-        const res = await fetch(`https://lrclib.net/api/search?${params}`);
-        const matches = await res.json();
-        const match = Array.isArray(matches)
-          ? matches
-              .filter((m) => m?.plainLyrics || m?.syncedLyrics)
-              .map((m) => ({
-                item: m,
-                score: scoreCandidate(
-                  { title: m?.trackName, artist: m?.artistName, album: m?.albumName, durationMs: m?.duration ? Number(m.duration) * 1000 : undefined },
-                  { title: lyricQuery, artist: lyricArtist, album: lyricAlbum, duration: track?.duration },
-                ),
-              }))
-              .sort((a, b) => b.score - a.score)
-              .find((m) => m.score >= (lyricArtist && lyricAlbum ? 0.76 : lyricArtist ? 0.72 : 0.58))?.item
-          : null;
-        setLyricsTitle(match?.trackName || lyricQuery);
-        setLyricsArtist(match?.artistName || lyricArtist || '');
-        setLyricsAlbum(match?.albumName || '');
-        setLyricsSource(match ? 'LRCLIB' : '');
-        setLyricsText(match?.plainLyrics || match?.syncedLyrics || 'No free lyrics found for this song.');
-      } catch {
-        setLyricsText('Lyrics could not be loaded right now.');
-      }
-    } finally {
-      setLyricsLoading(false);
-    }
-  }, [lyricAlbum, lyricArtist, lyricQuery, track?.duration]);
-
   const openBluetoothShare = useCallback(async () => {
     pulse();
     setBluetoothOpen(true);
+  }, [pulse]);
+
+  const openCast = useCallback(() => {
+    pulse();
+    setCastOpen(true);
   }, [pulse]);
 
   const openBluetoothDevices = useCallback(async () => {
@@ -484,61 +372,6 @@ export default function PlayerScreen() {
     setPlaylistName('');
     setPlaylistOpen(true);
   }, [pulse, track]);
-
-  const lyricsPayload = useMemo(() => {
-    const title = lyricsTitle || lyricQuery || 'Lyrics';
-    return [
-      title,
-      lyricsArtist ? `Artist: ${lyricsArtist}` : '',
-      lyricsAlbum ? `Movie / Album: ${lyricsAlbum}` : '',
-      lyricsSource ? `Source: ${lyricsSource}` : '',
-      '',
-      lyricsText,
-    ].filter(Boolean).join('\n');
-  }, [lyricQuery, lyricsAlbum, lyricsArtist, lyricsSource, lyricsText, lyricsTitle]);
-
-  const shareLyrics = useCallback(async () => {
-    if (!lyricsText.trim()) return;
-    try {
-      await Share.share({ title: lyricsTitle || 'Lyrics', message: lyricsPayload });
-    } catch {
-      Alert.alert('Lyrics', 'Could not open the Android share sheet.');
-    }
-  }, [lyricsPayload, lyricsText, lyricsTitle]);
-
-  const downloadLyrics = useCallback(async () => {
-    if (!lyricsText.trim()) return;
-    try {
-      const root = FileSystem.documentDirectory || FileSystem.cacheDirectory;
-      if (!root) throw new Error('Storage unavailable');
-      const dir = `${root}lyrics/`;
-      await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
-      const safeName = `${lyricsTitle || lyricQuery || 'lyrics'}-${lyricsArtist || 'shuffle'}`.replace(/[^a-z0-9_-]+/gi, '_');
-      const path = `${dir}${safeName}.txt`;
-      await FileSystem.writeAsStringAsync(path, lyricsPayload);
-      Alert.alert('Lyrics saved', 'Lyrics text saved in the app lyrics folder.', [
-        { text: 'Share file', onPress: () => Sharing.shareAsync(path, { mimeType: 'text/plain', dialogTitle: 'Share lyrics text' }).catch(() => {}) },
-        { text: 'OK' },
-      ]);
-    } catch {
-      Alert.alert('Lyrics', 'Could not save lyrics text.');
-    }
-  }, [lyricQuery, lyricsArtist, lyricsPayload, lyricsText, lyricsTitle]);
-
-  const showLyricsInEnglish = useCallback(async () => {
-    if (!lyricsText.trim() || lyricsTranslating) return;
-    setLyricsTranslating(true);
-    try {
-      const nextText = romanizeLyricsText(lyricsText);
-      if (!nextText) throw new Error('No romanization');
-      if (nextText !== lyricsText.trim()) setLyricsText(nextText);
-      setLyricsSource((source) => source ? `${source} · English text` : 'English text');
-    } catch {
-      Alert.alert('Lyrics', 'Could not convert these lyrics to English text right now.');
-    } finally {
-      setLyricsTranslating(false);
-    }
-  }, [lyricsText, lyricsTranslating]);
 
   const downloadAlbumArt = useCallback(async () => {
     if (!track || !lyricQuery || artLoading) return;
@@ -607,8 +440,8 @@ export default function PlayerScreen() {
     {
       id: 'lyrics',
       icon: 'document-text-outline',
-      active: lyricsOpen,
-      onPress: openLyrics,
+      active: false,
+      onPress: () => (router as any).push('/lyrics'),
       disabled: !track,
     },
     {
@@ -630,6 +463,13 @@ export default function PlayerScreen() {
       icon: 'bluetooth-outline',
       active: false,
       onPress: openBluetoothShare,
+      disabled: false,
+    },
+    {
+      id: 'cast',
+      icon: player.castConnected ? 'tv' : 'tv-outline',
+      active: player.castConnected,
+      onPress: openCast,
       disabled: false,
     },
   ] as const;
@@ -658,6 +498,22 @@ export default function PlayerScreen() {
           </View>
           <View style={styles.headerRight}>
             <Pressable
+              testID="queue-btn"
+              onPress={() => router.push('/queue')}
+              hitSlop={8}
+              style={styles.iconHeaderBtn}
+            >
+              <Ionicons name="list-outline" size={15} color={COLORS.onSurface} />
+            </Pressable>
+            <Pressable
+              testID="tag-editor-btn"
+              onPress={() => router.push('/tag-editor')}
+              hitSlop={8}
+              style={styles.iconHeaderBtn}
+            >
+              <Ionicons name="pricetag-outline" size={15} color={COLORS.onSurface} />
+            </Pressable>
+            <Pressable
               testID="song-search-btn"
               onPress={() => setSearchOpen(true)}
               hitSlop={8}
@@ -683,14 +539,106 @@ export default function PlayerScreen() {
           </View>
         </View>
 
-        {/* Album art */}
-        <View style={[styles.artWrap, { width: artSize, height: artSize, borderRadius: RADIUS.lg }]}>
-          <Image source={{ uri: artUri }} style={[StyleSheet.absoluteFill, { borderRadius: RADIUS.lg }]} contentFit="cover" testID="album-art" />
-          <LinearGradient colors={['transparent', 'rgba(0,0,0,0.55)']} style={[StyleSheet.absoluteFill, { borderRadius: RADIUS.lg }]} start={{ x: 0.5, y: 0.4 }} end={{ x: 0.5, y: 1 }} />
-          <View style={styles.artLabel}>
-            <Ionicons name="musical-notes" size={14} color={COLORS.brand} />
-            <Text style={styles.artLabelText} numberOfLines={1}>{folderName}</Text>
-          </View>
+        {/* Album art carousel (stacked cards) */}
+        <View style={{ width: maxContentWidth, height: artSize + 32, alignItems: 'center', justifyContent: 'center' }}>
+          <Animated.FlatList
+            ref={carouselRef}
+            data={player.queue}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            snapToInterval={artSize + 8}
+            decelerationRate="fast"
+            contentContainerStyle={{ paddingHorizontal: (maxContentWidth - artSize) / 2 }}
+            getItemLayout={(_, idx) => ({ length: artSize + 8, offset: (artSize + 8) * idx, index: idx })}
+            initialScrollIndex={Math.max(0, player.currentIndex)}
+            onScrollToIndexFailed={() => {}}
+            keyExtractor={(item, idx) => `${item.id}-${idx}`}
+            onScroll={Animated.event(
+              [{ nativeEvent: { contentOffset: { x: scrollX } } }],
+              { useNativeDriver: true }
+            )}
+            scrollEventThrottle={16}
+            onMomentumScrollEnd={(e) => {
+              const idx = Math.round(e.nativeEvent.contentOffset.x / (artSize + 8));
+              if (idx >= 0 && idx < player.queue.length && idx !== player.currentIndex) {
+                player.playQueueIndex(idx);
+              }
+            }}
+            renderItem={({ item: carouselItem, index }) => {
+              const isCurrent = carouselItem.id === track?.id;
+              const carouselArt = (player.artworkOverrides[carouselItem.id]) || carouselItem.artworkUri || DEFAULT_ART;
+              const itemWidth = artSize + 8;
+              const inputRange = [
+                (index - 1) * itemWidth,
+                index * itemWidth,
+                (index + 1) * itemWidth,
+              ];
+              const scale = scrollX.interpolate({
+                inputRange,
+                outputRange: [0.82, 1, 0.82],
+                extrapolate: 'clamp',
+              });
+              const translateX = scrollX.interpolate({
+                inputRange,
+                outputRange: [-40, 0, 40],
+                extrapolate: 'clamp',
+              });
+              const opacity = scrollX.interpolate({
+                inputRange: [
+                  (index - 2) * itemWidth,
+                  (index - 1) * itemWidth,
+                  index * itemWidth,
+                  (index + 1) * itemWidth,
+                  (index + 2) * itemWidth,
+                ],
+                outputRange: [0, 1, 1, 1, 0],
+                extrapolate: 'clamp',
+              });
+              const zIndex = scrollX.interpolate({
+                inputRange: [
+                  (index - 1) * itemWidth,
+                  index * itemWidth,
+                  (index + 1) * itemWidth,
+                ],
+                outputRange: [0, 10, 0],
+                extrapolate: 'clamp',
+              });
+              return (
+                <Animated.View style={{
+                  width: artSize,
+                  height: artSize,
+                  borderRadius: RADIUS.lg,
+                  overflow: 'hidden',
+                  borderWidth: isCurrent ? 1 : 0,
+                  borderColor: isCurrent ? COLORS.brand : 'transparent',
+                  shadowColor: '#000',
+                  shadowOpacity: 0.5,
+                  shadowRadius: 20,
+                  shadowOffset: { width: 0, height: 8 },
+                  elevation: 12,
+                  marginHorizontal: 4,
+                  opacity,
+                  transform: [{ scale }, { translateX }],
+                  zIndex: zIndex as any,
+                }}>
+                  <Image source={{ uri: carouselArt }} style={{ width: artSize, height: artSize }} contentFit="cover" />
+                  {isCurrent && (
+                    <LinearGradient colors={['transparent', 'rgba(0,0,0,0.55)']} style={[StyleSheet.absoluteFill, { borderRadius: RADIUS.lg }]} start={{ x: 0.5, y: 0.4 }} end={{ x: 0.5, y: 1 }}>
+                      <View style={{ position: 'absolute', bottom: 10, left: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Ionicons name="musical-notes" size={14} color={COLORS.brand} />
+                        <Text style={{ color: COLORS.onSurface, fontSize: 11, fontWeight: '600', flexShrink: 1 }} numberOfLines={1}>{folderName}</Text>
+                      </View>
+                    </LinearGradient>
+                  )}
+                </Animated.View>
+              );
+            }}
+            ListEmptyComponent={
+              <View style={{ width: artSize, height: artSize, borderRadius: RADIUS.lg, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', shadowColor: '#000', shadowOpacity: 0.6, shadowRadius: 24, shadowOffset: { width: 0, height: 12 }, elevation: 14, marginTop: SPACING.xs, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.04)' }}>
+                <Ionicons name="musical-note" size={48} color={COLORS.onSurfaceTertiary} />
+              </View>
+            }
+          />
         </View>
 
         {/* Track info */}
@@ -856,71 +804,6 @@ export default function PlayerScreen() {
           </View>
         </View>
       </Modal>
-      <Modal visible={lyricsOpen} transparent animationType="slide" onRequestClose={() => setLyricsOpen(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.lyricsSheet}>
-            <View style={styles.lyricsHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.lyricsTitle} numberOfLines={1}>{lyricsTitle || 'Lyrics'}</Text>
-                {!!lyricsSource && <Text style={styles.lyricsSource}>Source: {lyricsSource}</Text>}
-              </View>
-              {!lyricsLoading && !!lyricsText && (
-                <View style={styles.lyricsActions}>
-                  <Pressable onPress={shareLyrics} hitSlop={8} style={styles.closeBtn}>
-                    <Ionicons name="share-social-outline" size={18} color={COLORS.onSurface} />
-                  </Pressable>
-                  <Pressable onPress={downloadLyrics} hitSlop={8} style={styles.closeBtn}>
-                    <Ionicons name="download-outline" size={18} color={COLORS.onSurface} />
-                  </Pressable>
-                  <Pressable onPress={showLyricsInEnglish} disabled={lyricsTranslating} hitSlop={8} style={[styles.closeBtn, lyricsTranslating && { opacity: 0.55 }]}>
-                    <Ionicons name={lyricsTranslating ? 'hourglass-outline' : 'language-outline'} size={18} color={COLORS.onSurface} />
-                  </Pressable>
-                </View>
-              )}
-              <Pressable onPress={() => setLyricsOpen(false)} hitSlop={12} style={styles.closeBtn}>
-                <Ionicons name="close" size={20} color={COLORS.onSurface} />
-              </Pressable>
-            </View>
-            {lyricsLoading ? (
-              <View style={styles.lyricsLoading}>
-                <ActivityIndicator color={COLORS.brand} />
-              </View>
-            ) : (
-              <ScrollView contentContainerStyle={styles.lyricsContent}>
-                <View style={styles.lyricsInfo}>
-                  <Text style={styles.lyricsInfoLabel}>Song</Text>
-                  <Text style={styles.lyricsInfoValue}>{lyricsTitle || lyricQuery}</Text>
-                  {!!lyricsArtist && (
-                    <>
-                      <Text style={styles.lyricsInfoLabel}>Artist</Text>
-                      <Text style={styles.lyricsInfoValue}>{lyricsArtist}</Text>
-                    </>
-                  )}
-                  {!!lyricsAlbum && (
-                    <>
-                      <Text style={styles.lyricsInfoLabel}>Movie / Album</Text>
-                      <Text style={styles.lyricsInfoValue}>{lyricsAlbum}</Text>
-                    </>
-                  )}
-                  {!!lyricsSource && (
-                    <>
-                      <Text style={styles.lyricsInfoLabel}>Source</Text>
-                      <Text style={styles.lyricsInfoValue}>{lyricsSource}</Text>
-                    </>
-                  )}
-                </View>
-                {lyricsTranslating && (
-                  <View style={styles.translateBanner}>
-                    <ActivityIndicator color={COLORS.brand} size="small" />
-                    <Text style={styles.translateBannerText}>Converting lyrics to English text...</Text>
-                  </View>
-                )}
-                <Text style={styles.lyricsText}>{lyricsText}</Text>
-              </ScrollView>
-            )}
-          </View>
-        </View>
-      </Modal>
       <Modal visible={bluetoothOpen} transparent animationType="fade" onRequestClose={() => setBluetoothOpen(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.bluetoothSheet}>
@@ -945,6 +828,32 @@ export default function PlayerScreen() {
                 <Ionicons name="share-social-outline" size={18} color={COLORS.onBrandPrimary} />
                 <Text style={styles.bluetoothPrimaryText}>{track ? 'Share song' : 'Open devices'}</Text>
               </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={castOpen} transparent animationType="fade" onRequestClose={() => setCastOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.castSheet}>
+            <View style={styles.castHeader}>
+              <View style={[styles.castIcon, player.castConnected && styles.castIconActive]}>
+                <Ionicons name="tv" size={22} color={player.castConnected ? COLORS.onBrandPrimary : COLORS.brand} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.castTitle}>Cast to device</Text>
+                <Text style={styles.castMeta} numberOfLines={1}>
+                  {player.castConnected ? player.castDeviceName : 'No device connected'}
+                </Text>
+              </View>
+              <Pressable onPress={() => setCastOpen(false)} hitSlop={12} style={styles.closeBtn}>
+                <Ionicons name="close" size={20} color={COLORS.onSurface} />
+              </Pressable>
+            </View>
+            <View style={styles.castBody}>
+              <CastButton style={styles.castPickerButton} />
+              {player.castConnected && (
+                <Text style={styles.castHint}>Tap the Cast button above to disconnect</Text>
+              )}
             </View>
           </View>
         </View>
@@ -1002,21 +911,17 @@ const styles = StyleSheet.create({
   miniPill: { minWidth: 62, height: 30, borderRadius: RADIUS.pill, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.brand, paddingHorizontal: 10 },
   miniPillText: { color: COLORS.onBrandPrimary, fontSize: 11, fontWeight: '800' },
   modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.55)' },
-  lyricsSheet: { maxHeight: '70%', backgroundColor: COLORS.surfaceSecondary, borderTopLeftRadius: RADIUS.lg, borderTopRightRadius: RADIUS.lg, paddingTop: SPACING.md, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
-  lyricsHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.lg, paddingBottom: SPACING.sm, gap: SPACING.md },
-  lyricsTitle: { flex: 1, color: COLORS.onSurface, fontSize: 16, fontWeight: '700' },
-  lyricsSource: { color: COLORS.onSurfaceTertiary, fontSize: 11, marginTop: 2 },
-  lyricsActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   closeBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.08)' },
-  lyricsLoading: { minHeight: 180, alignItems: 'center', justifyContent: 'center' },
-  lyricsContent: { paddingHorizontal: SPACING.lg, paddingBottom: SPACING.xl },
-  lyricsInfo: { marginBottom: SPACING.md, paddingBottom: SPACING.md, borderBottomColor: 'rgba(255,255,255,0.08)', borderBottomWidth: 1 },
-  lyricsInfoLabel: { color: COLORS.onSurfaceTertiary, fontSize: 10, fontWeight: '800', letterSpacing: 1.1, marginTop: 8 },
-  lyricsInfoValue: { color: COLORS.onSurface, fontSize: 13, fontWeight: '600', marginTop: 2 },
-  translateBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: SPACING.md, paddingHorizontal: 12, paddingVertical: 10, borderRadius: RADIUS.md, backgroundColor: 'rgba(0,245,255,0.08)', borderWidth: 1, borderColor: 'rgba(0,245,255,0.18)' },
-  translateBannerText: { color: COLORS.onSurfaceSecondary, fontSize: 12, fontWeight: '700' },
-  lyricsText: { color: COLORS.onSurface, fontSize: 14, lineHeight: 22 },
   bluetoothSheet: { marginHorizontal: SPACING.lg, backgroundColor: '#05050A', borderRadius: RADIUS.lg, padding: SPACING.lg, borderWidth: 1, borderColor: 'rgba(0,245,255,0.18)', shadowColor: '#00F5FF', shadowOpacity: 0.18, shadowRadius: 18, elevation: 12 },
+  castSheet: { marginHorizontal: SPACING.lg, backgroundColor: '#05050A', borderRadius: RADIUS.lg, padding: SPACING.lg, borderWidth: 1, borderColor: 'rgba(0,245,255,0.18)', shadowColor: '#00F5FF', shadowOpacity: 0.18, shadowRadius: 18, elevation: 12 },
+  castHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  castIcon: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,245,255,0.10)', borderWidth: 1, borderColor: 'rgba(0,245,255,0.22)' },
+  castIconActive: { backgroundColor: COLORS.brand, borderColor: COLORS.brand },
+  castTitle: { color: COLORS.onSurface, fontSize: 17, fontWeight: '800' },
+  castMeta: { color: COLORS.onSurfaceTertiary, fontSize: 12, marginTop: 2 },
+  castBody: { alignItems: 'center', marginTop: SPACING.lg, gap: 12 },
+  castPickerButton: { width: 48, height: 48, borderRadius: 24, overflow: 'hidden' },
+  castHint: { color: COLORS.onSurfaceTertiary, fontSize: 12, textAlign: 'center' },
   bluetoothHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   bluetoothIcon: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,245,255,0.10)', borderWidth: 1, borderColor: 'rgba(0,245,255,0.22)' },
   bluetoothTitle: { color: COLORS.onSurface, fontSize: 17, fontWeight: '800' },

@@ -1,8 +1,16 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Linking, PermissionsAndroid, Platform } from 'react-native';
-import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
+import { Linking, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { addNativeMediaActionListener, appendNativeDiagnosticsLog, consumePendingNativeMediaAction, exportNativeStartupLogcat, getNativeAudioMetadata, getNativeBackgroundDiagnostics, setNativeEqSession, updateNativeMediaStatus } from '@/src/native/ShuffleEqualizer';
+import {
+  addNativeMediaActionListener, appendNativeDiagnosticsLog, consumePendingNativeMediaAction,
+  exportNativeStartupLogcat, getNativeAudioMetadata, getNativeBackgroundDiagnostics,
+  nativeInitPlayer, nativeLoadQueue, nativeTogglePlay, nativeNext, nativePrevious,
+  nativeSeekTo, nativeStopPlayback, nativeSetRepeatMode, nativeSetShuffleEnabled,
+  nativeSetVolume, nativePause, nativePlay, nativeSetGaplessEnabled,
+  addNativePlayerStateListener, addNativeTrackChangedListener, addNativePlayerErrorListener, addNativeQueueEndedListener,
+  addNativeCastStateListener, nativeIsCastAvailable, nativeCastLoadQueue, nativeCastPlay, nativeCastPause, nativeCastTogglePlay,
+} from '@/src/native/ShuffleEqualizer';
+import type { NativeCastState } from '@/src/native/ShuffleEqualizer';
 
 export type Track = {
   id: string;
@@ -13,8 +21,8 @@ export type Track = {
   contributingArtist?: string;
   album?: string;
   albumId?: string;
-  duration?: number; // seconds
-  folder: string; // parent folder path
+  duration?: number;
+  folder: string;
   folderName: string;
   artworkUri?: string;
 };
@@ -58,14 +66,15 @@ type PlayerState = {
   quickFolderPaths: string[];
   currentFolderPath: string | null;
   permissionGranted: boolean;
-  // new
-  sleepTimerEnd: number | null; // ms epoch
+  sleepTimerEnd: number | null;
   sleepRemainingSec: number | null;
   gaplessEnabled: boolean;
   wheelHapticStrength: number;
   visualizerEnabled: boolean;
   visualizerMode: VisualizerMode;
   savedPlaylists: SavedPlaylist[];
+  castConnected: boolean;
+  castDeviceName: string;
 };
 
 type PlayerActions = {
@@ -93,6 +102,10 @@ type PlayerActions = {
   setVisualizerEnabled: (v: boolean) => void;
   setVisualizerMode: (mode: VisualizerMode) => void;
   addTrackToPlaylist: (trackId: string, playlistId?: string, playlistName?: string) => Promise<boolean>;
+  setSavedPlaylists: (playlists: SavedPlaylist[]) => void;
+  moveInQueue: (fromIndex: number, toIndex: number) => void;
+  removeFromQueue: (index: number) => void;
+  castTogglePlay: () => void;
 };
 
 const PlayerCtx = createContext<(PlayerState & PlayerActions) | null>(null);
@@ -153,27 +166,19 @@ export function trackArtworkKey(track: Track) {
   ].map((part) => String(part).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')).join('|');
 }
 
-function syncPlayerEqSession(player: AudioPlayer | null) {
-  const sessionId = Number((player as any)?.audioSessionId ?? 0);
-  if (Number.isFinite(sessionId) && sessionId > 0) {
-    setNativeEqSession(sessionId).catch(() => {});
-  } else {
-    setNativeEqSession(0).catch(() => {});
-  }
-}
-
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
-  const playerRef = useRef<AudioPlayer | null>(null);
-  const nextPlayerRef = useRef<AudioPlayer | null>(null);
-  const nextPreloadedFor = useRef<string | null>(null);
-  const activePlayerIdRef = useRef(0);
   const pausedForCallRef = useRef(false);
   const restoredLastStateRef = useRef(false);
   const autoLoadedLibraryRef = useRef(false);
-  const expectedPlayingRef = useRef(false);
-  const unexpectedStopLoggedRef = useRef(false);
+  const nativeInitializedRef = useRef(false);
+  const lastNativeStateRef = useRef({ positionMs: 0, durationMs: 0, isPlaying: false, currentIndex: -1, lastUpdateMs: 0 });
+  const queueRef = useRef<Track[]>([]);
+  const currentIndexRef = useRef(-1);
+
   const [queue, setQueue] = useState<Track[]>([]);
+  queueRef.current = queue;
   const [currentIndex, setCurrentIndex] = useState(-1);
+  currentIndexRef.current = currentIndex;
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [positionSec, setPositionSec] = useState(0);
@@ -195,18 +200,27 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [wheelHapticStrength, setWheelHapticStrengthState] = useState(70);
   const [visualizerEnabled, setVisualizerEnabledState] = useState(true);
   const [visualizerMode, setVisualizerModeState] = useState<VisualizerMode>('bars');
-  const [savedPlaylists, setSavedPlaylists] = useState<SavedPlaylist[]>([]);
+  const [savedPlaylists, setSavedPlaylistsState] = useState<SavedPlaylist[]>([]);
   const [storageReady, setStorageReady] = useState(false);
+  const [castConnected, setCastConnected] = useState(false);
+  const [castDeviceName, setCastDeviceName] = useState('');
+
+  const repeatModeToNative = (mode: 'off' | 'one' | 'all'): number =>
+    mode === 'off' ? 0 : mode === 'one' ? 1 : 2;
+
+  const repeatModeFromNative = (mode: number): 'off' | 'one' | 'all' =>
+    mode === 1 ? 'one' : mode === 2 ? 'all' : 'off';
+
+  // Init native player + load prefs
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    if (!nativeInitializedRef.current) {
+      nativeInitializedRef.current = true;
+      nativeInitPlayer().catch(() => {});
+    }
+  }, []);
 
   useEffect(() => {
-    setAudioModeAsync({
-      playsInSilentMode: true,
-      shouldPlayInBackground: true,
-      interruptionMode: 'doNotMix',
-    }).catch(() => {});
-    if (Platform.OS === 'android' && Platform.Version >= 33) {
-      PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(() => {});
-    }
     (async () => {
       const v = await AsyncStorage.getItem(VOLUME_KEY);
       if (v != null) setVolumeState(parseFloat(v));
@@ -227,7 +241,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const art = await AsyncStorage.getItem(ARTWORK_KEY);
       if (art) try { setArtworkOverrides(JSON.parse(art)); } catch {}
       const playlists = await AsyncStorage.getItem(PLAYLISTS_KEY);
-      if (playlists) try { setSavedPlaylists(JSON.parse(playlists)); } catch {}
+      if (playlists) try { setSavedPlaylistsState(JSON.parse(playlists)); } catch {}
     })().finally(() => {
       setStorageReady(true);
       appendNativeDiagnosticsLog('app_started storage_ready=true').catch(() => {});
@@ -238,36 +252,21 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  // Position polling + sleep timer countdown + gapless preload trigger
+  // Position tracking: smooth local interpolation based on native state events
   useEffect(() => {
     const id = setInterval(() => {
-      const p = playerRef.current;
-      if (p) {
-        setPositionSec(p.currentTime ?? 0);
-        if (p.duration && Number.isFinite(p.duration)) setDurationSec(p.duration);
-        setIsPlaying(!!p.playing);
-        if (expectedPlayingRef.current && !p.playing && !isLoading) {
-          if (!unexpectedStopLoggedRef.current) {
-            unexpectedStopLoggedRef.current = true;
-            const track = currentIndex >= 0 && currentIndex < queue.length ? queue[currentIndex] : null;
-            getNativeBackgroundDiagnostics()
-              .then((diag) => appendNativeDiagnosticsLog(`unexpected_playback_stop title="${displayTrackTitle(track)}" position=${p.currentTime ?? 0} duration=${p.duration ?? 0} diagnostics=${JSON.stringify(diag)}`))
-              .catch(() => {});
-          }
-        } else if (p.playing) {
-          unexpectedStopLoggedRef.current = false;
-        }
+      const ns = lastNativeStateRef.current;
+      if (ns.isPlaying && ns.durationMs > 0) {
+        const elapsed = Date.now() - ns.lastUpdateMs;
+        const pos = Math.min(ns.positionMs + elapsed, ns.durationMs);
+        setPositionSec(pos / 1000);
+        setDurationSec(ns.durationMs / 1000);
       }
       if (sleepTimerEnd != null) {
         const remaining = Math.max(0, Math.ceil((sleepTimerEnd - Date.now()) / 1000));
         setSleepRemainingSec(remaining);
         if (remaining <= 0) {
-          try { playerRef.current?.pause(); } catch {}
-          try { nextPlayerRef.current?.pause(); } catch {}
-          try { nextPlayerRef.current?.remove(); } catch {}
-          nextPlayerRef.current = null;
-          nextPreloadedFor.current = null;
-          expectedPlayingRef.current = false;
+          nativePause().catch(() => {});
           appendNativeDiagnosticsLog('sleep_timer_pause').catch(() => {});
           setIsPlaying(false);
           setSleepTimerEnd(null);
@@ -276,39 +275,76 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       } else if (sleepRemainingSec != null) {
         setSleepRemainingSec(null);
       }
-      // Gapless preload ~4s before track end
-      if (gaplessEnabled && p && durationSec > 5 && repeat !== 'one') {
-        const remain = durationSec - (p.currentTime ?? 0);
-        const nextIdx = (currentIndex + 1) % queue.length;
-        const nextTrack = queue[nextIdx];
-        if (remain > 0 && remain < 4 && nextTrack && nextPreloadedFor.current !== nextTrack.id) {
-          try {
-            if (nextPlayerRef.current) {
-              try { nextPlayerRef.current.pause(); } catch {}
-              try { nextPlayerRef.current.remove(); } catch {}
-            }
-            const np = createAudioPlayer({ uri: nextTrack.uri }, { keepAudioSessionActive: true });
-            np.volume = 0;
-            nextPlayerRef.current = np;
-            nextPreloadedFor.current = nextTrack.id;
-          } catch {}
-        }
-      }
     }, 500);
     return () => clearInterval(id);
-  }, [sleepTimerEnd, sleepRemainingSec, gaplessEnabled, durationSec, currentIndex, queue, repeat, isLoading]);
+  }, [sleepTimerEnd, sleepRemainingSec]);
 
+  // Native event listeners
   useEffect(() => {
-    const p = playerRef.current;
-    if (!p) return;
-    const playerId = activePlayerIdRef.current;
-    const sub = p.addListener('playbackStatusUpdate', (status: any) => {
-      if (playerRef.current !== p || activePlayerIdRef.current !== playerId) return;
-      if (status?.didJustFinish) handleTrackEnd();
+    const stateSub = addNativePlayerStateListener((state) => {
+      const now = Date.now();
+      lastNativeStateRef.current = {
+        positionMs: state.positionMs,
+        durationMs: state.durationMs,
+        isPlaying: state.isPlaying,
+        currentIndex: state.currentIndex,
+        lastUpdateMs: now,
+      };
+      setIsPlaying(state.isPlaying);
+      setDurationSec(state.durationMs / 1000);
+      setPositionSec(state.positionMs / 1000);
+      setCurrentIndex(state.currentIndex);
+      setShuffle(state.shuffleEnabled);
+      setRepeat(repeatModeFromNative(state.repeatMode));
+      setIsLoading(false);
     });
-    return () => { sub?.remove?.(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentIndex, queue.length, repeat, shuffle, gaplessEnabled]);
+
+    const trackSub = addNativeTrackChangedListener((data: any) => {
+      setCurrentIndex(data.index);
+      appendNativeDiagnosticsLog(`native_track_changed index=${data.index} id=${data.trackId}`).catch(() => {});
+    });
+
+    const errorSub = addNativePlayerErrorListener((error) => {
+      appendNativeDiagnosticsLog(`native_player_error ${error.message}`).catch(() => {});
+    });
+
+    const queueEndSub = addNativeQueueEndedListener(() => {
+      appendNativeDiagnosticsLog('native_queue_ended').catch(() => {});
+      setIsPlaying(false);
+    });
+
+    const castSub = addNativeCastStateListener((evt: NativeCastState) => {
+      if (evt.state === 'connected') {
+        setCastConnected(true);
+        setCastDeviceName(evt.deviceName ?? '');
+        appendNativeDiagnosticsLog(`cast_connected device=${evt.deviceName}`).catch(() => {});
+        const q = queueRef.current;
+        const idx = currentIndexRef.current;
+        if (q.length > 0 && idx >= 0) {
+          nativeCastLoadQueue(q, idx).catch(() => {});
+        }
+      } else if (evt.state === 'disconnected') {
+        setCastConnected(false);
+        setCastDeviceName('');
+        appendNativeDiagnosticsLog('cast_disconnected').catch(() => {});
+        if (queueRef.current.length > 0) {
+          nativePlay().catch(() => {});
+        }
+      }
+    });
+
+    nativeIsCastAvailable().then((avail) => {
+      if (avail) appendNativeDiagnosticsLog('cast_available=true').catch(() => {});
+    }).catch(() => {});
+
+    return () => {
+      stateSub.remove();
+      trackSub.remove();
+      errorSub.remove();
+      queueEndSub.remove();
+      castSub.remove();
+    };
+  }, []);
 
   const persistRecent = useCallback(async (list: string[]) => {
     await AsyncStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 10)));
@@ -318,91 +354,21 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     await AsyncStorage.setItem(QUICK_FOLDERS_KEY, JSON.stringify(list.slice(0, 20)));
   }, []);
 
-  const disposePlayer = useCallback((p: AudioPlayer | null) => {
-    if (!p) return;
-    try { p.pause(); } catch {}
-    try { p.seekTo(0); } catch {}
-    try { p.remove(); } catch {}
-  }, []);
-
-  const clearPreload = useCallback(() => {
-    disposePlayer(nextPlayerRef.current);
-    nextPlayerRef.current = null;
-    nextPreloadedFor.current = null;
-  }, [disposePlayer]);
-
-  const setupPlayer = useCallback((uri: string): AudioPlayer => {
-    disposePlayer(playerRef.current);
-    playerRef.current = null;
-    const p = createAudioPlayer({ uri }, { keepAudioSessionActive: true });
-    p.volume = muted ? 0 : volume;
-    playerRef.current = p;
-    syncPlayerEqSession(p);
-    return p;
-  }, [disposePlayer, muted, volume]);
-
-  const playTrackAtIndex = useCallback(async (idx: number, list: Track[]) => {
-    if (idx < 0 || idx >= list.length) return;
-    const playerId = activePlayerIdRef.current + 1;
-    activePlayerIdRef.current = playerId;
+  const loadQueueToNative = useCallback(async (list: Track[], startIndex: number) => {
+    setQueue(list);
     setIsLoading(true);
-    const t = list[idx];
-
-    // Try to use the preloaded next-track player for gapless transitions
-    let p: AudioPlayer;
-    if (gaplessEnabled && nextPlayerRef.current && nextPreloadedFor.current === t.id) {
-      disposePlayer(playerRef.current);
-      playerRef.current = null;
-      p = nextPlayerRef.current;
-      p.volume = muted ? 0 : volume;
-      playerRef.current = p;
-      syncPlayerEqSession(p);
-      nextPlayerRef.current = null;
-      nextPreloadedFor.current = null;
-    } else {
-      clearPreload();
-      p = setupPlayer(t.uri);
+    setCurrentIndex(startIndex);
+    const track = list[startIndex];
+    if (track) {
+      setPositionSec(0);
+      setDurationSec(track.duration ?? 0);
+      lastNativeStateRef.current = { positionMs: 0, durationMs: (track.duration ?? 0) * 1000, isPlaying: false, currentIndex: startIndex, lastUpdateMs: Date.now() };
     }
-    if (activePlayerIdRef.current !== playerId) {
-      disposePlayer(p);
-      setIsLoading(false);
-      return;
+    await nativeLoadQueue(list, startIndex);
+    if (castConnected) {
+      nativeCastLoadQueue(list, startIndex).catch(() => {});
     }
-    setCurrentIndex(idx);
-    setPositionSec(0);
-    setDurationSec(t.duration ?? 0);
-    try {
-      p.play();
-      expectedPlayingRef.current = true;
-      unexpectedStopLoggedRef.current = false;
-      appendNativeDiagnosticsLog(`play title="${displayTrackTitle(t)}" index=${idx} length=${list.length}`).catch(() => {});
-      syncPlayerEqSession(p);
-      setTimeout(() => syncPlayerEqSession(p), 250);
-      setIsPlaying(true);
-    } catch {}
-    setIsLoading(false);
-  }, [clearPreload, disposePlayer, setupPlayer, gaplessEnabled, muted, volume]);
-
-  const handleTrackEnd = useCallback(() => {
-    if (repeat === 'one') {
-      appendNativeDiagnosticsLog(`track_end repeat_one index=${currentIndex}`).catch(() => {});
-      playTrackAtIndex(currentIndex, queue);
-      return;
-    }
-    let n = currentIndex + 1;
-    if (shuffle && queue.length > 1) n = Math.floor(Math.random() * queue.length);
-    if (n >= queue.length) {
-      if (repeat === 'all') n = 0;
-      else {
-        expectedPlayingRef.current = false;
-        appendNativeDiagnosticsLog(`queue_finished index=${currentIndex} length=${queue.length}`).catch(() => {});
-        setIsPlaying(false);
-        return;
-      }
-    }
-    appendNativeDiagnosticsLog(`track_end next_index=${n} length=${queue.length}`).catch(() => {});
-    playTrackAtIndex(n, queue);
-  }, [repeat, shuffle, currentIndex, queue, playTrackAtIndex]);
+  }, [castConnected]);
 
   const loadFolders = useCallback(async (): Promise<LibraryScanResult> => {
     try {
@@ -435,7 +401,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         const filename: string = a.filename || 'Unknown';
         const meta = metadataById[String(a.id)] || {};
         let { folderPath, folderName } = parseFolder(uri);
-        // Fallback to album grouping if we can't parse the path
         if (folderPath === 'unknown' && a.albumId) {
           folderPath = `album:${a.albumId}`;
           folderName = meta.album || a.album || 'Album';
@@ -475,14 +440,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             const folder = list.find((f) => f.path === last.folderPath) || list.find((f) => f.tracks.some((t) => t.id === last.trackId));
             const idx = folder?.tracks.findIndex((t) => t.id === last.trackId) ?? -1;
             if (folder && idx >= 0) {
-              setQueue(folder.tracks);
-              setCurrentFolderPath(folder.path);
-              setCurrentIndex(idx);
-              setPositionSec(Math.max(0, last.positionSec || 0));
-              setDurationSec(folder.tracks[idx]?.duration ?? 0);
-              const p = setupPlayer(folder.tracks[idx].uri);
               const seek = Math.max(0, last.positionSec || 0);
-              if (seek > 0) setTimeout(() => p.seekTo(seek), 250);
+              await loadQueueToNative(folder.tracks, idx);
+              if (seek > 0) await nativeSeekTo(seek * 1000);
+              await nativePlay();
             }
           } catch {}
         }
@@ -493,12 +454,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       };
     } catch (e) {
       console.warn('loadFolders error', e);
-      return {
-        folderCount: 0,
-        trackCount: 0,
-      };
+      return { folderCount: 0, trackCount: 0 };
     }
-  }, [artworkOverrides, setupPlayer]);
+  }, [artworkOverrides, loadQueueToNative]);
 
   useEffect(() => {
     if (!storageReady) return;
@@ -510,95 +468,95 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const playFolder = useCallback(async (folderPath: string, startIndex = 0) => {
     const f = folders.find((x) => x.path === folderPath);
     if (!f || f.tracks.length === 0) return;
-    setQueue(f.tracks);
     setCurrentFolderPath(folderPath);
     const recent = [folderPath, ...recentFolders.filter((p) => p !== folderPath)].slice(0, 10);
     setRecentFolders(recent);
     persistRecent(recent);
-    await playTrackAtIndex(startIndex, f.tracks);
-  }, [folders, recentFolders, playTrackAtIndex, persistRecent]);
+    await loadQueueToNative(f.tracks, startIndex);
+  }, [folders, recentFolders, persistRecent, loadQueueToNative]);
 
   const playTrack = useCallback(async (track: Track) => {
     const f = folders.find((x) => x.path === track.folder);
     const list = f ? f.tracks : [track];
-    setQueue(list);
     setCurrentFolderPath(track.folder);
     const idx = list.findIndex((t) => t.id === track.id);
-    await playTrackAtIndex(idx >= 0 ? idx : 0, list);
-  }, [folders, playTrackAtIndex]);
+    await loadQueueToNative(list, idx >= 0 ? idx : 0);
+  }, [folders, loadQueueToNative]);
 
   const playQueueIndex = useCallback(async (idx: number) => {
-    await playTrackAtIndex(idx, queue);
-  }, [playTrackAtIndex, queue]);
+    if (idx < 0 || idx >= queue.length) return;
+    await nativeSeekTo(idx);
+    // Force reload by seeking to the start of the target track
+    const targetId = queue[idx]?.id;
+    if (targetId) {
+      await loadQueueToNative(queue, idx);
+    }
+  }, [queue, loadQueueToNative]);
 
   const togglePlay = useCallback(() => {
-    const p = playerRef.current;
-    if (!p) return;
-    if (p.playing) {
-      expectedPlayingRef.current = false;
-      p.pause();
-      appendNativeDiagnosticsLog(`pause position=${p.currentTime ?? 0}`).catch(() => {});
-      setIsPlaying(false);
+    if (castConnected) {
+      nativeCastTogglePlay().catch(() => {});
+    } else {
+      nativeTogglePlay().catch(() => {});
     }
-    else {
-      expectedPlayingRef.current = true;
-      unexpectedStopLoggedRef.current = false;
-      p.play();
-      appendNativeDiagnosticsLog(`resume position=${p.currentTime ?? 0}`).catch(() => {});
-      setIsPlaying(true);
-    }
-  }, []);
+    setIsPlaying((p) => !p);
+  }, [castConnected]);
 
   const stop = useCallback(() => {
-    activePlayerIdRef.current += 1;
-    clearPreload();
-    const p = playerRef.current;
-    if (!p) return;
-    try { p.pause(); p.seekTo(0); } catch {}
-    expectedPlayingRef.current = false;
-    appendNativeDiagnosticsLog('stop').catch(() => {});
+    nativeStopPlayback().catch(() => {});
     setIsPlaying(false);
     setPositionSec(0);
-  }, [clearPreload]);
+  }, []);
 
   const next = useCallback(async () => {
-    if (queue.length === 0) return;
-    let n = currentIndex + 1;
-    if (shuffle) n = Math.floor(Math.random() * queue.length);
-    if (n >= queue.length) n = 0;
-    await playTrackAtIndex(n, queue);
-  }, [queue, currentIndex, shuffle, playTrackAtIndex]);
+    await nativeNext();
+  }, []);
 
   const prev = useCallback(async () => {
-    if (queue.length === 0) return;
-    if (positionSec > 3) { playerRef.current?.seekTo(0); return; }
-    let n = currentIndex - 1;
-    if (n < 0) n = queue.length - 1;
-    await playTrackAtIndex(n, queue);
-  }, [queue, currentIndex, positionSec, playTrackAtIndex]);
+    if (positionSec > 3) {
+      await nativeSeekTo(0);
+    } else {
+      await nativePrevious();
+    }
+  }, [positionSec]);
 
   const seekTo = useCallback((sec: number) => {
-    playerRef.current?.seekTo(sec);
+    nativeSeekTo(Math.max(0, sec) * 1000).catch(() => {});
     setPositionSec(sec);
+    lastNativeStateRef.current = { ...lastNativeStateRef.current, positionMs: sec * 1000, lastUpdateMs: Date.now() };
   }, []);
 
   const setVolume = useCallback((vol: number) => {
     const v = Math.max(0, Math.min(1, vol));
     setVolumeState(v);
-    if (playerRef.current) playerRef.current.volume = muted ? 0 : v;
+    nativeSetVolume(v).catch(() => {});
     AsyncStorage.setItem(VOLUME_KEY, String(v)).catch(() => {});
-  }, [muted]);
+  }, []);
 
   const toggleMute = useCallback(() => {
     setMuted((m) => {
       const nextMuted = !m;
-      if (playerRef.current) playerRef.current.volume = nextMuted ? 0 : volume;
+      nativeSetVolume(nextMuted ? 0 : volume).catch(() => {});
       return nextMuted;
     });
   }, [volume]);
 
-  const toggleShuffle = useCallback(() => setShuffle((s) => !s), []);
-  const cycleRepeat = useCallback(() => setRepeat((r) => r === 'off' ? 'all' : r === 'all' ? 'one' : 'off'), []);
+  const toggleShuffle = useCallback(() => {
+    setShuffle((s) => {
+      const next = !s;
+      nativeSetShuffleEnabled(next).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  const cycleRepeat = useCallback(() => {
+    setRepeat((r) => {
+      const next = r === 'off' ? 'all' : r === 'all' ? 'one' : 'off';
+      nativeSetRepeatMode(repeatModeToNative(next)).catch(() => {});
+      return next;
+    });
+  }, []);
+
   const toggleFavorite = useCallback((trackId: string) => {
     setFavorites((list) => {
       const next = list.includes(trackId) ? list.filter((id) => id !== trackId) : [trackId, ...list];
@@ -643,10 +601,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setGapless = useCallback((v: boolean) => {
-    if (!v) clearPreload();
     setGaplessEnabled(v);
     AsyncStorage.setItem(GAPLESS_KEY, String(v)).catch(() => {});
-  }, [clearPreload]);
+    nativeSetGaplessEnabled(v).catch(() => {});
+  }, []);
 
   const setWheelHapticStrength = useCallback((v: number) => {
     const next = Math.max(0, Math.min(100, Math.round(v)));
@@ -664,9 +622,44 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(VISUALIZER_MODE_KEY, mode).catch(() => {});
   }, []);
 
+  const castTogglePlay = useCallback(() => {
+    if (castConnected) {
+      nativeCastTogglePlay().catch(() => {});
+    } else {
+      nativeTogglePlay().catch(() => {});
+    }
+  }, [castConnected]);
+
+  const moveInQueue = useCallback((fromIndex: number, toIndex: number) => {
+    setQueue((q) => {
+      if (fromIndex < 0 || fromIndex >= q.length || toIndex < 0 || toIndex >= q.length) return q;
+      const next = [...q];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const removeFromQueue = useCallback((index: number) => {
+    setQueue((q) => {
+      if (index < 0 || index >= q.length) return q;
+      const next = q.filter((_, i) => i !== index);
+      if (index < currentIndexRef.current) {
+        currentIndexRef.current -= 1;
+        setCurrentIndex(currentIndexRef.current);
+      }
+      return next;
+    });
+  }, []);
+
+  const setSavedPlaylists = useCallback((playlists: SavedPlaylist[]) => {
+    setSavedPlaylistsState(playlists);
+    AsyncStorage.setItem(PLAYLISTS_KEY, JSON.stringify(playlists)).catch(() => {});
+  }, []);
+
   const addTrackToPlaylist = useCallback(async (trackId: string, playlistId?: string, playlistName?: string) => {
     if (!trackId) return false;
-    setSavedPlaylists((list) => {
+    setSavedPlaylistsState((list) => {
       const name = playlistName?.trim();
       let updated: SavedPlaylist[];
       if (playlistId) {
@@ -696,6 +689,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, []);
 
+  // Persist last state
   useEffect(() => {
     const track = currentIndex >= 0 && currentIndex < queue.length ? queue[currentIndex] : null;
     if (!track && !currentFolderPath) return;
@@ -706,28 +700,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     } satisfies LastPlayerState)).catch(() => {});
   }, [currentFolderPath, currentIndex, positionSec, queue]);
 
+  // Handle media actions from notification/widgets
   const handleMediaAction = useCallback((action: string | null | undefined) => {
     if (action) appendNativeDiagnosticsLog(`js_media_action=${action}`).catch(() => {});
     if (action === 'toggle') togglePlay();
-    else if (action === 'play') {
-      if (!playerRef.current?.playing) togglePlay();
-    } else if (action === 'pause') {
-      if (playerRef.current?.playing) togglePlay();
-    } else if (action === 'audio_focus_loss') {
-      if (playerRef.current?.playing) {
-        expectedPlayingRef.current = false;
-        togglePlay();
-      }
-    } else if (action === 'phone_pause') {
-      if (playerRef.current?.playing) {
-        pausedForCallRef.current = true;
-        expectedPlayingRef.current = false;
-        togglePlay();
-      }
+    else if (action === 'play') nativePlay().catch(() => {});
+    else if (action === 'pause') nativePause().catch(() => {});
+    else if (action === 'phone_pause') {
+      nativePause().catch(() => {});
+      pausedForCallRef.current = true;
     } else if (action === 'phone_resume') {
-      if (pausedForCallRef.current && playerRef.current && !playerRef.current.playing) {
+      if (pausedForCallRef.current) {
         pausedForCallRef.current = false;
-        togglePlay();
+        nativePlay().catch(() => {});
       }
     } else if (action === 'volume_up') {
       setVolume(volume + 0.06);
@@ -759,30 +744,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     return () => sub.remove();
   }, [handleMediaAction]);
 
-  useEffect(() => {
-    const track = currentIndex >= 0 && currentIndex < queue.length ? queue[currentIndex] : null;
-    const artworkUri = track ? artworkOverrides[track.id] || track.artworkUri : undefined;
-    updateNativeMediaStatus(
-      displayTrackTitle(track),
-      track?.artist || track?.album || track?.folderName || (queue.length ? `Track ${currentIndex + 1} of ${queue.length}` : 'Ready'),
-      isPlaying,
-      positionSec,
-      durationSec,
-      artworkUri,
-    ).catch(() => {});
-  }, [artworkOverrides, currentIndex, durationSec, isPlaying, positionSec, queue]);
-
   const value = useMemo(() => ({
     queue, currentIndex, isPlaying, isLoading, positionSec, durationSec,
     volume, muted, shuffle, repeat, favorites, artworkOverrides, folders, recentFolders, quickFolderPaths, currentFolderPath, permissionGranted,
     sleepTimerEnd, sleepRemainingSec, gaplessEnabled, wheelHapticStrength, visualizerEnabled, visualizerMode, savedPlaylists,
+    castConnected, castDeviceName,
     loadFolders, playFolder, playTrack, playQueueIndex, togglePlay, stop, next, prev, seekTo, setVolume,
-    toggleMute, toggleShuffle, cycleRepeat, toggleFavorite, setTrackArtwork, addQuickFolder, removeQuickFolder, setPermissionGranted, setSleepTimer, setGapless, setWheelHapticStrength, setVisualizerEnabled, setVisualizerMode, addTrackToPlaylist,
+    toggleMute, toggleShuffle, cycleRepeat, toggleFavorite, setTrackArtwork, addQuickFolder, removeQuickFolder, setPermissionGranted, setSleepTimer, setGapless, setWheelHapticStrength, setVisualizerEnabled, setVisualizerMode, setSavedPlaylists, addTrackToPlaylist, moveInQueue, removeFromQueue, castTogglePlay,
   }), [queue, currentIndex, isPlaying, isLoading, positionSec, durationSec, volume, muted, shuffle,
-       repeat, favorites, artworkOverrides, folders, recentFolders, quickFolderPaths, currentFolderPath, permissionGranted,
-       sleepTimerEnd, sleepRemainingSec, gaplessEnabled, wheelHapticStrength, visualizerEnabled, visualizerMode, savedPlaylists,
-       loadFolders, playFolder, playTrack, playQueueIndex, togglePlay, stop, next, prev, seekTo, setVolume,
-       toggleMute, toggleShuffle, cycleRepeat, toggleFavorite, setTrackArtwork, addQuickFolder, removeQuickFolder, setSleepTimer, setGapless, setWheelHapticStrength, setVisualizerEnabled, setVisualizerMode, addTrackToPlaylist]);
+        repeat, favorites, artworkOverrides, folders, recentFolders, quickFolderPaths, currentFolderPath, permissionGranted,
+        sleepTimerEnd, sleepRemainingSec, gaplessEnabled, wheelHapticStrength, visualizerEnabled, visualizerMode, savedPlaylists,
+        castConnected, castDeviceName,
+        loadFolders, playFolder, playTrack, playQueueIndex, togglePlay, stop, next, prev, seekTo, setVolume,
+        toggleMute, toggleShuffle, cycleRepeat, toggleFavorite, setTrackArtwork, addQuickFolder, removeQuickFolder, setSleepTimer, setGapless, setWheelHapticStrength, setVisualizerEnabled, setVisualizerMode, setSavedPlaylists, addTrackToPlaylist, moveInQueue, removeFromQueue, castTogglePlay]);
 
   return <PlayerCtx.Provider value={value}>{children}</PlayerCtx.Provider>;
 }

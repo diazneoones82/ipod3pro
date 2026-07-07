@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#05050A">
+
+    <ImageView
+        android:id="@+id/drive_album_art"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:scaleType="centerCrop"
+        android:alpha="0.6"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <View
+        android:id="@+id/drive_overlay_top"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@drawable/drive_mode_overlay"
+        app:layout_constraintBottom_toTopOf="@id/drive_overlay_bottom"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <View
+        android:id="@+id/drive_overlay_bottom"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@drawable/drive_mode_overlay"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/drive_overlay_top" />
+
+    <ImageButton
+        android:id="@+id/drive_close"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_marginTop="16dp"
+        android:layout_marginEnd="16dp"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:padding="12dp"
+        android:src="@android:drawable/ic_menu_close_clear_cancel"
+        android:tint="#FFFFFF"
+        android:contentDescription="Close"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <ImageView
+        android:id="@+id/drive_car_icon"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="20dp"
+        android:src="@drawable/ic_car"
+        android:tint="#00F5FF"
+        android:contentDescription="Drive Mode"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <TextView
+        android:id="@+id/drive_mode_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:text="Driving Mode"
+        android:textColor="#00F5FF"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.05"
+        app:layout_constraintBottom_toBottomOf="@id/drive_car_icon"
+        app:layout_constraintStart_toEndOf="@id/drive_car_icon"
+        app:layout_constraintTop_toTopOf="@id/drive_car_icon" />
+
+    <TextView
+        android:id="@+id/drive_title"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp"
+        android:layout_marginBottom="16dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="2"
+        android:text="No Track Playing"
+        android:textColor="#FFFFFF"
+        android:textSize="28sp"
+        android:textStyle="bold"
+        app:layout_constraintBottom_toTopOf="@id/drive_artist"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <TextView
+        android:id="@+id/drive_artist"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp"
+        android:layout_marginBottom="32dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="1"
+        android:text="Ready"
+        android:textColor="#B0FFFFFF"
+        android:textSize="18sp"
+        app:layout_constraintBottom_toTopOf="@id/drive_progress_container"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <LinearLayout
+        android:id="@+id/drive_progress_container"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp"
+        android:orientation="vertical"
+        android:gravity="center_vertical"
+        app:layout_constraintBottom_toTopOf="@id/drive_controls"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <SeekBar
+            android:id="@+id/drive_progress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="1000"
+            android:progress="0"
+            android:progressDrawable="@android:drawable/progress_horizontal"
+            android:thumb="@android:drawable/progress_horizontal" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/drive_time_current"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="start"
+                android:text="0:00"
+                android:textColor="#80FFFFFF"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/drive_time_total"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="end"
+                android:text="0:00"
+                android:textColor="#80FFFFFF"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/drive_controls"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="48dp"
+        android:gravity="center"
+        android:orientation="horizontal"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <ImageButton
+            android:id="@+id/drive_shuffle"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:padding="14dp"
+            android:src="@android:drawable/ic_menu_sort_by_size"
+            android:tint="#FFFFFF"
+            android:contentDescription="Shuffle" />
+
+        <ImageButton
+            android:id="@+id/drive_previous"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:padding="20dp"
+            android:src="@android:drawable/ic_media_previous"
+            android:tint="#FFFFFF"
+            android:contentDescription="Previous" />
+
+        <ImageButton
+            android:id="@+id/drive_play_pause"
+            android:layout_width="112dp"
+            android:layout_height="112dp"
+            android:layout_marginStart="16dp"
+            android:layout_marginEnd="16dp"
+            android:background="@drawable/widget_play_button"
+            android:padding="28dp"
+            android:src="@android:drawable/ic_media_play"
+            android:tint="#FFFFFF"
+            android:contentDescription="Play/Pause" />
+
+        <ImageButton
+            android:id="@+id/drive_next"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:padding="20dp"
+            android:src="@android:drawable/ic_media_next"
+            android:tint="#FFFFFF"
+            android:contentDescription="Next" />
+
+        <ImageButton
+            android:id="@+id/drive_repeat"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:padding="14dp"
+            android:src="@android:drawable/ic_menu_revert"
+            android:tint="#FFFFFF"
+            android:contentDescription="Repeat" />
+
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
