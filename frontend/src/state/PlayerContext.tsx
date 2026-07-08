@@ -256,10 +256,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const id = setInterval(() => {
       const ns = lastNativeStateRef.current;
-      if (ns.isPlaying && ns.durationMs > 0) {
-        const elapsed = Date.now() - ns.lastUpdateMs;
-        const pos = Math.min(ns.positionMs + elapsed, ns.durationMs);
-        setPositionSec(pos / 1000);
+      if (ns.durationMs > 0) {
+        if (ns.isPlaying) {
+          const elapsed = Date.now() - ns.lastUpdateMs;
+          const pos = Math.min(ns.positionMs + elapsed, ns.durationMs);
+          setPositionSec(pos / 1000);
+        } else {
+          setPositionSec(ns.positionMs / 1000);
+        }
         setDurationSec(ns.durationMs / 1000);
       }
       if (sleepTimerEnd != null) {
@@ -301,7 +305,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
     const trackSub = addNativeTrackChangedListener((data: any) => {
       setCurrentIndex(data.index);
-      appendNativeDiagnosticsLog(`native_track_changed index=${data.index} id=${data.trackId}`).catch(() => {});
+      const trk = queueRef.current[data.index];
+      if (trk?.duration) {
+        setPositionSec(0);
+        setDurationSec(trk.duration);
+        lastNativeStateRef.current = { ...lastNativeStateRef.current, positionMs: 0, durationMs: trk.duration * 1000, currentIndex: data.index, lastUpdateMs: Date.now() };
+      }
+      appendNativeDiagnosticsLog(`native_track_changed index=${data.index} id=${data.trackId} duration=${trk?.duration}`).catch(() => {});
     });
 
     const errorSub = addNativePlayerErrorListener((error) => {
@@ -311,6 +321,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const queueEndSub = addNativeQueueEndedListener(() => {
       appendNativeDiagnosticsLog('native_queue_ended').catch(() => {});
       setIsPlaying(false);
+      setPositionSec(0);
+      lastNativeStateRef.current = { ...lastNativeStateRef.current, positionMs: 0, isPlaying: false, lastUpdateMs: Date.now() };
     });
 
     const castSub = addNativeCastStateListener((evt: NativeCastState) => {

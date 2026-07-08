@@ -220,6 +220,12 @@ export default function PlayerScreen() {
     if (player.currentIndex >= 0) setSelectedIndex(player.currentIndex);
   }, [player.currentIndex]);
 
+  useEffect(() => {
+    if (player.currentIndex >= 0 && carouselRef.current) {
+      carouselRef.current.scrollToIndex({ index: player.currentIndex, animated: true });
+    }
+  }, [player.currentIndex]);
+
   const pulse = useCallback(() => {
     const strength = Math.max(0, Math.min(100, player.wheelHapticStrength));
     if (strength <= 0) return;
