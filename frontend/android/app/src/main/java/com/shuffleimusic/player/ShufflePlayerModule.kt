@@ -17,6 +17,7 @@ class ShufflePlayerModule(private val reactContext: ReactApplicationContext) :
 
   companion object {
     private var activeReactContext: ReactApplicationContext? = null
+    private const val MAX_INLINE_QUEUE_CHARS = 450_000
   }
 
   init {
@@ -39,26 +40,10 @@ class ShufflePlayerModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun loadQueue(tracks: ReadableArray, startIndex: Int, promise: Promise) {
     try {
-      val jsonArr = JSONArray()
-      for (i in 0 until tracks.size()) {
-        val map = tracks.getMap(i) ?: continue
-        val obj = JSONObject()
-        if (map.hasKey("id")) obj.put("id", map.getString("id"))
-        if (map.hasKey("uri")) obj.put("uri", map.getString("uri"))
-        if (map.hasKey("filename")) obj.put("filename", map.getString("filename"))
-        if (map.hasKey("title")) obj.put("title", map.getString("title"))
-        if (map.hasKey("artist")) obj.put("artist", map.getString("artist"))
-        if (map.hasKey("album")) obj.put("album", map.getString("album"))
-        if (map.hasKey("duration")) obj.put("duration", map.getDouble("duration"))
-        if (map.hasKey("artworkUri")) {
-          val art = map.getString("artworkUri")
-          if (!art.isNullOrBlank()) obj.put("artworkUri", art)
-        }
-        jsonArr.put(obj)
-      }
+      val tracksJson = tracksToJson(tracks, includeAlbumId = false)
       val intent = Intent(reactContext, ShufflePlayerService::class.java).apply {
         action = ShufflePlayerService.ACTION_LOAD_QUEUE
-        putExtra(ShufflePlayerService.EXTRA_TRACKS, jsonArr.toString())
+        putQueueExtra(this, ShufflePlayerService.EXTRA_TRACKS, ShufflePlayerService.EXTRA_TRACKS_REF, tracksJson)
         putExtra(ShufflePlayerService.EXTRA_START_INDEX, startIndex)
       }
       startService(intent)
@@ -115,6 +100,20 @@ class ShufflePlayerModule(private val reactContext: ReactApplicationContext) :
       promise.resolve(true)
     } catch (e: Throwable) {
       promise.reject("E_PREV", e.message)
+    }
+  }
+
+  @ReactMethod
+  fun seekToIndex(index: Int, promise: Promise) {
+    try {
+      val intent = Intent(reactContext, ShufflePlayerService::class.java).apply {
+        action = ShufflePlayerService.ACTION_SEEK_TO_INDEX
+        putExtra(ShufflePlayerService.EXTRA_QUEUE_INDEX, index)
+      }
+      startService(intent)
+      promise.resolve(true)
+    } catch (e: Throwable) {
+      promise.reject("E_SEEK_INDEX", e.message)
     }
   }
 
@@ -216,23 +215,10 @@ class ShufflePlayerModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun castLoadQueue(tracks: ReadableArray, startIndex: Int, promise: Promise) {
     try {
-      val jsonArr = JSONArray()
-      for (i in 0 until tracks.size()) {
-        val map = tracks.getMap(i) ?: continue
-        val obj = JSONObject()
-        if (map.hasKey("id")) obj.put("id", map.getString("id"))
-        if (map.hasKey("uri")) obj.put("uri", map.getString("uri"))
-        if (map.hasKey("filename")) obj.put("filename", map.getString("filename"))
-        if (map.hasKey("title")) obj.put("title", map.getString("title"))
-        if (map.hasKey("artist")) obj.put("artist", map.getString("artist"))
-        if (map.hasKey("album")) obj.put("album", map.getString("album"))
-        if (map.hasKey("duration")) obj.put("duration", map.getDouble("duration"))
-        if (map.hasKey("albumId")) obj.put("albumId", map.getString("albumId"))
-        jsonArr.put(obj)
-      }
+      val tracksJson = tracksToJson(tracks, includeAlbumId = true)
       val intent = Intent(reactContext, ShufflePlayerService::class.java).apply {
         action = ShufflePlayerService.ACTION_CAST_LOAD
-        putExtra(ShufflePlayerService.EXTRA_CAST_TRACKS, jsonArr.toString())
+        putQueueExtra(this, ShufflePlayerService.EXTRA_CAST_TRACKS, ShufflePlayerService.EXTRA_CAST_TRACKS_REF, tracksJson)
         putExtra(ShufflePlayerService.EXTRA_CAST_START_INDEX, startIndex)
       }
       startService(intent)
@@ -295,5 +281,35 @@ class ShufflePlayerModule(private val reactContext: ReactApplicationContext) :
     } else {
       reactContext.startService(intent)
     }
+  }
+
+  private fun putQueueExtra(intent: Intent, inlineKey: String, refKey: String, tracksJson: String) {
+    if (tracksJson.length <= MAX_INLINE_QUEUE_CHARS) {
+      intent.putExtra(inlineKey, tracksJson)
+    } else {
+      intent.putExtra(refKey, ShufflePlayerService.putPendingQueue(tracksJson))
+    }
+  }
+
+  private fun tracksToJson(tracks: ReadableArray, includeAlbumId: Boolean): String {
+    val jsonArr = JSONArray()
+    for (i in 0 until tracks.size()) {
+      val map = tracks.getMap(i) ?: continue
+      val obj = JSONObject()
+      if (map.hasKey("id")) obj.put("id", map.getString("id"))
+      if (map.hasKey("uri")) obj.put("uri", map.getString("uri"))
+      if (map.hasKey("filename")) obj.put("filename", map.getString("filename"))
+      if (map.hasKey("title")) obj.put("title", map.getString("title"))
+      if (map.hasKey("artist")) obj.put("artist", map.getString("artist"))
+      if (map.hasKey("album")) obj.put("album", map.getString("album"))
+      if (map.hasKey("duration")) obj.put("duration", map.getDouble("duration"))
+      if (includeAlbumId && map.hasKey("albumId")) obj.put("albumId", map.getString("albumId"))
+      if (map.hasKey("artworkUri")) {
+        val art = map.getString("artworkUri")
+        if (!art.isNullOrBlank()) obj.put("artworkUri", art)
+      }
+      jsonArr.put(obj)
+    }
+    return jsonArr.toString()
   }
 }

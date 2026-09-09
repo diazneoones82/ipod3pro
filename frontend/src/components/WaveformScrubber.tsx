@@ -1,8 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { View, StyleSheet, LayoutChangeEvent } from 'react-native';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { runOnJS, useSharedValue } from 'react-native-reanimated';
-import Svg, { Path, Defs, LinearGradient, Stop, ClipPath, Rect } from 'react-native-svg';
+import Svg, { Path, Defs, LinearGradient, RadialGradient, Stop, ClipPath, Rect, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 
 type Props = {
@@ -14,13 +14,17 @@ type Props = {
 };
 
 const POINT_COUNT = 100;
-const WAVE_HEIGHT = 36;
-const STROKE_WIDTH = 3;
-const GLOW_WIDTH = 10;
-const PLAYHEAD_RADIUS = 5;
+const WAVE_HEIGHT = 24;
+const SVG_PAD = 10;
+const SVG_HEIGHT = WAVE_HEIGHT + SVG_PAD * 2;
+const STROKE_WIDTH = 2;
+const GLOW_WIDTH = 6;
+const PLAYHEAD_RADIUS = 3;
 const VIBRANT_COLORS = ['#FF2BD6', '#8B5CFF', '#00F5FF', '#20FF9F', '#B6FF00', '#FFD400', '#FF5C00'];
 const GLOW_COLORS = ['rgba(255,43,214,0.35)', 'rgba(139,92,255,0.35)', 'rgba(0,245,255,0.35)', 'rgba(32,255,159,0.35)', 'rgba(182,255,0,0.35)', 'rgba(255,212,0,0.35)', 'rgba(255,92,0,0.35)'];
 const GRADIENT_STOPS = VIBRANT_COLORS.map((c, i) => ({ color: c, offset: `${Math.round((i / (VIBRANT_COLORS.length - 1)) * 100)}%` }));
+const DOT_GRADIENT_STOPS = VIBRANT_COLORS.map((c, i) => ({ color: c, offset: `${Math.round((i / (VIBRANT_COLORS.length - 1)) * 100)}%` }));
+const GLOW_GRADIENT_STOPS = VIBRANT_COLORS.map((c, i) => ({ color: c, offset: `${Math.round((i / (VIBRANT_COLORS.length - 1)) * 100)}%` }));
 
 function hashStr(s: string): number {
   let h = 2166136261 >>> 0;
@@ -70,6 +74,12 @@ function buildWavePath(heights: number[], width: number): string {
 export default function WaveformScrubber({ progress, duration, seed, onSeek, testID }: Props) {
   const [width, setWidth] = useState(0);
   const widthSv = useSharedValue(0);
+  const [breathTick, setBreathTick] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setBreathTick((t) => t + 1), 30);
+    return () => clearInterval(id);
+  }, []);
 
   const heights = useMemo(() => generateWave(seed || 'empty', POINT_COUNT), [seed]);
 
@@ -110,7 +120,7 @@ export default function WaveformScrubber({ progress, duration, seed, onSeek, tes
     <GestureDetector gesture={pan}>
       <View style={styles.wrap} onLayout={onLayout} testID={testID} collapsable={false}>
         {width > 0 && (
-          <Svg width={width} height={WAVE_HEIGHT} viewBox={`0 0 ${width} ${WAVE_HEIGHT}`}>
+          <Svg width={width} height={SVG_HEIGHT} viewBox={`0 ${-SVG_PAD} ${width} ${SVG_HEIGHT}`} overflow="visible">
             <Defs>
               <LinearGradient id="waveGrad" x1="0" y1="0" x2="1" y2="0">
                 {GRADIENT_STOPS.map((s, i) => (
@@ -130,6 +140,16 @@ export default function WaveformScrubber({ progress, duration, seed, onSeek, tes
               <ClipPath id="clip">
                 <Rect x={0} y={0} width={clipWidth} height={WAVE_HEIGHT} />
               </ClipPath>
+              <RadialGradient id="rainbowDot" cx="50%" cy="50%" r="50%">
+                {DOT_GRADIENT_STOPS.map((s, i) => (
+                  <Stop key={i} offset={s.offset} stopColor={s.color} stopOpacity={1} />
+                ))}
+              </RadialGradient>
+              <RadialGradient id="rainbowGlow" cx="50%" cy="50%" r="50%">
+                {GLOW_GRADIENT_STOPS.map((s, i) => (
+                  <Stop key={i} offset={s.offset} stopColor={s.color} stopOpacity={0.3} />
+                ))}
+              </RadialGradient>
             </Defs>
 
             {/* unfilled — very subtle */}
@@ -164,21 +184,32 @@ export default function WaveformScrubber({ progress, duration, seed, onSeek, tes
               clipPath="url(#clip)"
             />
 
-            {/* playhead dot */}
-            {clampedProgress > 0 && clampedProgress < 1 && (
-              <Path
-                d={(() => {
-                  const idx = Math.round(clampedProgress * (heights.length - 1));
-                  const stepX = Math.max(1, width / (heights.length - 1));
-                  const x = idx * stepX;
-                  const midY = WAVE_HEIGHT / 2;
-                  const range = (WAVE_HEIGHT - STROKE_WIDTH - 4) / 2;
-                  const y = midY + (heights[idx] - 0.5) * range;
-                  return `M ${x} ${y - PLAYHEAD_RADIUS} A ${PLAYHEAD_RADIUS} ${PLAYHEAD_RADIUS} 0 1 1 ${x} ${y + PLAYHEAD_RADIUS} A ${PLAYHEAD_RADIUS} ${PLAYHEAD_RADIUS} 0 1 1 ${x} ${y - PLAYHEAD_RADIUS}`;
-                })()}
-                fill="#FFFFFF"
-              />
-            )}
+            {/* playhead dot — amoled rainbow glow with breathing */}
+            {(() => {
+              const idx = Math.round(clampedProgress * (heights.length - 1));
+              const stepX = Math.max(1, width / (heights.length - 1));
+              const x = idx * stepX;
+              const midY = WAVE_HEIGHT / 2;
+              const range = (WAVE_HEIGHT - STROKE_WIDTH - 4) / 2;
+              const y = midY + (heights[idx] - 0.5) * range;
+              const breathScale = 1 + 0.15 * Math.sin(breathTick * 0.15);
+              return (
+                <>
+                  <Circle
+                    cx={x}
+                    cy={y}
+                    r={PLAYHEAD_RADIUS * 3.5 * breathScale}
+                    fill="url(#rainbowGlow)"
+                  />
+                  <Circle
+                    cx={x}
+                    cy={y}
+                    r={PLAYHEAD_RADIUS * breathScale}
+                    fill="url(#rainbowDot)"
+                  />
+                </>
+              );
+            })()}
           </Svg>
         )}
       </View>
@@ -188,9 +219,10 @@ export default function WaveformScrubber({ progress, duration, seed, onSeek, tes
 
 const styles = StyleSheet.create({
   wrap: {
-    height: WAVE_HEIGHT + 8,
+    height: SVG_HEIGHT + 8,
     justifyContent: 'center',
     alignItems: 'center',
     paddingVertical: 4,
+    overflow: 'visible',
   },
 });

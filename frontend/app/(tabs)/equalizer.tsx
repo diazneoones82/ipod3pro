@@ -10,11 +10,20 @@ import { COLORS, SPACING, RADIUS } from '@/src/theme/tokens';
 import GlassCard from '@/src/components/GlassCard';
 import FrequencyGraph from '@/src/components/FrequencyGraph';
 import CustomSlider from '@/src/components/CustomSlider';
-import { useEQ } from '@/src/state/EQContext';
-import { FILTER_TYPE_LABEL, type FilterType, getBrandSections, REVERB_PRESETS } from '@/src/utils/eq-parser';
+import { useEQ, type CustomEQProfile } from '@/src/state/EQContext';
+import { FILTER_TYPE_LABEL, type FilterType, getBrandSections, REVERB_PRESETS, serializeEqualizerApo } from '@/src/utils/eq-parser';
 import { useRouter } from 'expo-router';
 
 const FILTER_TYPES: FilterType[] = ['PK', 'LSC', 'HSC', 'LP', 'HP', 'NO', 'BP', 'AP'];
+
+function profileExportFileName(name: string, fallback: string) {
+  const safeName = (name.trim() || fallback)
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80)
+    .trim();
+  return `${safeName || fallback}.txt`;
+}
 
 export default function EqualizerScreen() {
   const insets = useSafeAreaInsets();
@@ -81,6 +90,27 @@ export default function EqualizerScreen() {
       showToast('Export failed');
     }
   }, [eq]);
+
+  const handleExportCustomProfile = useCallback(async (profile: CustomEQProfile) => {
+    try {
+      const text = serializeEqualizerApo({ preamp: profile.preamp, bands: profile.bands });
+      const dir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+      if (!dir) { showToast('Storage unavailable'); return; }
+      const fileName = profileExportFileName(profile.name, `Custom ${profile.slot}`);
+      const path = `${dir}${fileName}`;
+      await FileSystem.writeAsStringAsync(path, text);
+      try {
+        const Sharing = await import('expo-sharing');
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(path, { mimeType: 'text/plain', dialogTitle: `Share ${profile.name}` });
+          return;
+        }
+      } catch {}
+      showToast(`Saved to ${fileName}`);
+    } catch {
+      showToast('Export failed');
+    }
+  }, []);
 
   const openDiscover = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -275,6 +305,14 @@ export default function EqualizerScreen() {
                   </Pressable>
                   <Pressable testID={`custom-eq-save-${slot}`} onPress={() => openSaveProfile(slot)} style={styles.customIconBtnSecondary}>
                     <Ionicons name="save-outline" size={14} color={COLORS.brand} />
+                  </Pressable>
+                  <Pressable
+                    testID={`custom-eq-export-${slot}`}
+                    disabled={!profile}
+                    onPress={() => profile && handleExportCustomProfile(profile)}
+                    style={[styles.customIconBtnSecondary, !profile && styles.customIconBtnDisabled]}
+                  >
+                    <Ionicons name="share-outline" size={14} color={profile ? COLORS.onSurface : COLORS.onSurfaceTertiary} />
                   </Pressable>
                   <Pressable
                     testID={`custom-eq-delete-${slot}`}

@@ -1,10 +1,11 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Linking, Platform } from 'react-native';
+import { AppState, Linking, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system/legacy';
 import {
   addNativeMediaActionListener, appendNativeDiagnosticsLog, consumePendingNativeMediaAction,
   exportNativeStartupLogcat, getNativeAudioMetadata, getNativeBackgroundDiagnostics,
-  nativeInitPlayer, nativeLoadQueue, nativeTogglePlay, nativeNext, nativePrevious,
+  nativeInitPlayer, nativeLoadQueue, nativeTogglePlay, nativeNext, nativePrevious, nativeSeekToIndex,
   nativeSeekTo, nativeStopPlayback, nativeSetRepeatMode, nativeSetShuffleEnabled,
   nativeSetVolume, nativePause, nativePlay, nativeSetGaplessEnabled,
   addNativePlayerStateListener, addNativeTrackChangedListener, addNativePlayerErrorListener, addNativeQueueEndedListener,
@@ -121,11 +122,19 @@ const FAVORITES_KEY = '@shuffleimusic/favorites';
 const ARTWORK_KEY = '@shuffleimusic/artwork_overrides';
 const LAST_STATE_KEY = '@shuffleimusic/last_state';
 const PLAYLISTS_KEY = '@shuffleimusic/playlists';
+const LIBRARY_CACHE_KEY = '@shuffleimusic/library_cache';
+const NOW_PLAYING_CACHE_KEY = '@shuffleimusic/now_playing_cache';
 
 type LastPlayerState = {
   folderPath: string | null;
   trackId: string | null;
   positionSec: number;
+};
+
+type CachedNowPlayingState = LastPlayerState & {
+  queue: Track[];
+  currentIndex: number;
+  savedAt: number;
 };
 
 function parseFolder(uri: string, fallbackFolder = 'unknown', fallbackName = 'Unknown') {
@@ -153,6 +162,74 @@ function coverKey(folderPath: string, name: string) {
   return `${folderPath}/${stripExt(name)}`;
 }
 
+function normalizeFolderKey(folderPath: string, folderName: string) {
+  const nameKey = folderName.trim().toLowerCase();
+  if (nameKey) return `name:${nameKey}`;
+  const normalized = folderPath
+    .replace(/^file:\/\//, '')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+  return normalized && normalized !== 'unknown' ? normalized : `name:${folderName.trim().toLowerCase()}`;
+}
+
+function trackIdentity(track: Pick<Track, 'uri' | 'filename' | 'duration' | 'folder' | 'folderName'>) {
+  return `${normalizeFolderKey(track.folder, track.folderName)}|${track.filename.toLowerCase()}`;
+}
+
+async function readableAssetUri(uri: string) {
+  if (!uri || !uri.startsWith('file://')) return true;
+  try {
+    return (await FileSystem.getInfoAsync(uri)).exists;
+  } catch {
+    return false;
+  }
+}
+
+function safeArtworkFilePart(value: string) {
+  return value.replace(/[^a-z0-9_-]+/gi, '_').slice(0, 48) || 'album_art';
+}
+
+function folderFileUri(folderPath: string, fileName: string) {
+  if (!folderPath || folderPath === 'unknown' || folderPath.startsWith('album:')) return '';
+  const normalizedFolder = folderPath.startsWith('file://') ? folderPath : `file://${folderPath}`;
+  return `${normalizedFolder.replace(/\/+$/, '')}/${encodeURIComponent(fileName)}`;
+}
+
+async function findLocalFolderArtwork(folderPath: string, filename: string) {
+  const baseName = safeArtworkFilePart(filename.replace(/\.[^.]+$/, ''));
+  const names = [
+    `${baseName}.jpg`,
+    `${baseName}.jpeg`,
+    `${baseName}.png`,
+    `${baseName}.webp`,
+    'cover.jpg',
+    'cover.jpeg',
+    'cover.png',
+    'cover.webp',
+    'folder.jpg',
+    'folder.jpeg',
+    'folder.png',
+    'folder.webp',
+    'album.jpg',
+    'album.jpeg',
+    'album.png',
+    'album.webp',
+    'front.jpg',
+    'front.jpeg',
+    'front.png',
+    'front.webp',
+  ];
+  for (const name of names) {
+    const uri = folderFileUri(folderPath, name);
+    if (!uri) continue;
+    try {
+      if ((await FileSystem.getInfoAsync(uri)).exists) return uri;
+    } catch {}
+  }
+  return '';
+}
+
 function displayTrackTitle(track: Track | null) {
   return track?.title?.trim() || track?.filename?.replace(/\.[^.]+$/, '') || 'Shuffle MuSic';
 }
@@ -171,9 +248,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const restoredLastStateRef = useRef(false);
   const autoLoadedLibraryRef = useRef(false);
   const nativeInitializedRef = useRef(false);
+  const hydratedCachedQueueRef = useRef(false);
+  const pendingNowPlayingRef = useRef<CachedNowPlayingState | null>(null);
   const lastNativeStateRef = useRef({ positionMs: 0, durationMs: 0, isPlaying: false, currentIndex: -1, lastUpdateMs: 0 });
   const queueRef = useRef<Track[]>([]);
   const currentIndexRef = useRef(-1);
+  const currentFolderPathRef = useRef<string | null>(null);
+  const positionSecRef = useRef(0);
 
   const [queue, setQueue] = useState<Track[]>([]);
   queueRef.current = queue;
@@ -182,6 +263,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [positionSec, setPositionSec] = useState(0);
+  positionSecRef.current = positionSec;
   const [durationSec, setDurationSec] = useState(0);
   const [volume, setVolumeState] = useState(0.8);
   const [muted, setMuted] = useState(false);
@@ -193,6 +275,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [recentFolders, setRecentFolders] = useState<string[]>([]);
   const [quickFolderPaths, setQuickFolderPaths] = useState<string[]>([]);
   const [currentFolderPath, setCurrentFolderPath] = useState<string | null>(null);
+  currentFolderPathRef.current = currentFolderPath;
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [sleepTimerEnd, setSleepTimerEnd] = useState<number | null>(null);
   const [sleepRemainingSec, setSleepRemainingSec] = useState<number | null>(null);
@@ -202,6 +285,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [visualizerMode, setVisualizerModeState] = useState<VisualizerMode>('bars');
   const [savedPlaylists, setSavedPlaylistsState] = useState<SavedPlaylist[]>([]);
   const [storageReady, setStorageReady] = useState(false);
+  const [libraryCacheLoaded, setLibraryCacheLoaded] = useState(false);
   const [castConnected, setCastConnected] = useState(false);
   const [castDeviceName, setCastDeviceName] = useState('');
 
@@ -242,7 +326,34 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (art) try { setArtworkOverrides(JSON.parse(art)); } catch {}
       const playlists = await AsyncStorage.getItem(PLAYLISTS_KEY);
       if (playlists) try { setSavedPlaylistsState(JSON.parse(playlists)); } catch {}
+      const nowPlaying = await AsyncStorage.getItem(NOW_PLAYING_CACHE_KEY);
+      if (nowPlaying) {
+        try {
+          const cached = JSON.parse(nowPlaying) as CachedNowPlayingState;
+          if (Array.isArray(cached.queue) && cached.queue.length > 0) {
+            const idx = Math.max(0, Math.min(cached.currentIndex || 0, cached.queue.length - 1));
+            pendingNowPlayingRef.current = { ...cached, currentIndex: idx };
+            setQueue(cached.queue);
+            setCurrentIndex(idx);
+            setCurrentFolderPath(cached.folderPath || cached.queue[idx]?.folder || null);
+            setPositionSec(Math.max(0, cached.positionSec || 0));
+            setDurationSec(cached.queue[idx]?.duration ?? 0);
+            setPermissionGranted(true);
+          }
+        } catch {}
+      }
+      const library = await AsyncStorage.getItem(LIBRARY_CACHE_KEY);
+      if (library) {
+        try {
+          const cached = JSON.parse(library) as FolderInfo[];
+          if (Array.isArray(cached) && cached.length > 0) {
+            setFolders(cached);
+            setPermissionGranted(true);
+          }
+        } catch {}
+      }
     })().finally(() => {
+      setLibraryCacheLoaded(true);
       setStorageReady(true);
       appendNativeDiagnosticsLog('app_started storage_ready=true').catch(() => {});
       exportNativeStartupLogcat().catch(() => {});
@@ -382,17 +493,76 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, [castConnected]);
 
+  const persistNowPlaying = useCallback((list = queueRef.current, idx = currentIndexRef.current) => {
+    const track = idx >= 0 && idx < list.length ? list[idx] : null;
+    if (!track) return;
+    const folderPath = currentFolderPathRef.current || track.folder || null;
+    const position = Math.max(0, positionSecRef.current || 0);
+    AsyncStorage.setItem(LAST_STATE_KEY, JSON.stringify({
+      folderPath,
+      trackId: track.id,
+      positionSec: position,
+    } satisfies LastPlayerState)).catch(() => {});
+    AsyncStorage.setItem(NOW_PLAYING_CACHE_KEY, JSON.stringify({
+      folderPath,
+      trackId: track.id,
+      positionSec: position,
+      queue: list,
+      currentIndex: idx,
+      savedAt: Date.now(),
+    } satisfies CachedNowPlayingState)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!storageReady || hydratedCachedQueueRef.current) return;
+    const cached = pendingNowPlayingRef.current;
+    if (!cached?.queue?.length) return;
+    hydratedCachedQueueRef.current = true;
+    restoredLastStateRef.current = true;
+    loadQueueToNative(cached.queue, cached.currentIndex)
+      .then(async () => {
+        const seek = Math.max(0, cached.positionSec || 0);
+        if (seek > 0) await nativeSeekTo(seek * 1000);
+      })
+      .catch(() => {});
+  }, [loadQueueToNative, storageReady]);
+
+  const restoreLastState = useCallback(async (list: FolderInfo[]) => {
+    if (restoredLastStateRef.current || list.length === 0) return;
+    restoredLastStateRef.current = true;
+    const rawLast = await AsyncStorage.getItem(LAST_STATE_KEY).catch(() => null);
+    if (!rawLast) return;
+    try {
+      const last = JSON.parse(rawLast) as LastPlayerState;
+      const folder = list.find((f) => f.path === last.folderPath) || list.find((f) => f.tracks.some((t) => t.id === last.trackId));
+      const idx = folder?.tracks.findIndex((t) => t.id === last.trackId) ?? -1;
+      if (folder && idx >= 0) {
+        const seek = Math.max(0, last.positionSec || 0);
+        setCurrentFolderPath(folder.path);
+        await loadQueueToNative(folder.tracks, idx);
+        if (seek > 0) await nativeSeekTo(seek * 1000);
+        await nativePlay();
+      }
+    } catch {}
+  }, [loadQueueToNative]);
+
   const loadFolders = useCallback(async (): Promise<LibraryScanResult> => {
     try {
+      AsyncStorage.removeItem(LIBRARY_CACHE_KEY).catch(() => {});
+      AsyncStorage.removeItem(NOW_PLAYING_CACHE_KEY).catch(() => {});
+      pendingNowPlayingRef.current = null;
       const MediaLibrary = await import('expo-media-library');
       const perm = await MediaLibrary.requestPermissionsAsync(false, ['audio']);
       if (!perm.granted) {
         setPermissionGranted(false);
+        setFolders([]);
         return { folderCount: 0, trackCount: 0 };
       }
       setPermissionGranted(true);
+      setFolders([]);
       let all: any[] = [];
       let after: string | undefined;
+      const seenAssetIds = new Set<string>();
       for (let i = 0; i < 20; i++) {
         const page: any = await MediaLibrary.getAssetsAsync({
           mediaType: MediaLibrary.MediaType.audio,
@@ -400,16 +570,25 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           after,
           sortBy: [MediaLibrary.SortBy.creationTime],
         });
-        all = all.concat(page.assets || []);
+        for (const asset of page.assets || []) {
+          const id = String(asset?.id || '');
+          const uri = String(asset?.uri || asset?.localUri || '');
+          const key = id || uri;
+          if (!key || seenAssetIds.has(key)) continue;
+          seenAssetIds.add(key);
+          all.push(asset);
+        }
         if (!page.hasNextPage) break;
         after = page.endCursor;
       }
       const imageByExactName = new Map<string, string>();
       const imageByFolderCover = new Map<string, string>();
       const map = new Map<string, FolderInfo>();
+      const trackIndexByFolder = new Map<string, Map<string, number>>();
       const metadataById = await getNativeAudioMetadata(all.map((a) => String(a.id)).filter(Boolean));
       for (const a of all) {
         const uri: string = a.uri || a.localUri || '';
+        if (!(await readableAssetUri(uri))) continue;
         const filename: string = a.filename || 'Unknown';
         const meta = metadataById[String(a.id)] || {};
         let { folderPath, folderName } = parseFolder(uri);
@@ -417,7 +596,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           folderPath = `album:${a.albumId}`;
           folderName = meta.album || a.album || 'Album';
         }
-        const artworkUri = imageByExactName.get(coverKey(folderPath, filename)) ?? imageByFolderCover.get(folderPath);
+        const artworkUri = await findLocalFolderArtwork(folderPath, filename)
+          || imageByExactName.get(coverKey(folderPath, filename))
+          || imageByFolderCover.get(folderPath);
         const track: Track = {
           id: a.id,
           uri,
@@ -434,32 +615,70 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         };
         const persistedArtwork = artworkOverrides[track.id] || artworkOverrides[trackArtworkKey(track)];
         if (persistedArtwork) track.artworkUri = persistedArtwork;
-        if (!map.has(folderPath)) {
-          map.set(folderPath, { path: folderPath, name: folderName, trackCount: 0, tracks: [] });
+        const folderKey = normalizeFolderKey(folderPath, folderName);
+        if (!map.has(folderKey)) {
+          map.set(folderKey, { path: folderPath, name: folderName, trackCount: 0, tracks: [] });
+          trackIndexByFolder.set(folderKey, new Map());
         }
-        const f = map.get(folderPath)!;
-        f.tracks.push(track);
+        const f = map.get(folderKey)!;
+        const trackIndex = trackIndexByFolder.get(folderKey)!;
+        const dedupeKey = trackIdentity(track);
+        const existingIndex = trackIndex.get(dedupeKey);
+        if (existingIndex == null) {
+          trackIndex.set(dedupeKey, f.tracks.length);
+          f.tracks.push(track);
+        } else {
+          const existing = f.tracks[existingIndex];
+          if ((track.duration || 0) >= (existing.duration || 0)) {
+            f.tracks[existingIndex] = { ...track, artworkUri: track.artworkUri || existing.artworkUri };
+          }
+        }
         f.trackCount = f.tracks.length;
       }
       const list = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
       setFolders(list);
-      if (!restoredLastStateRef.current) {
-        restoredLastStateRef.current = true;
-        const rawLast = await AsyncStorage.getItem(LAST_STATE_KEY).catch(() => null);
-        if (rawLast) {
-          try {
-            const last = JSON.parse(rawLast) as LastPlayerState;
-            const folder = list.find((f) => f.path === last.folderPath) || list.find((f) => f.tracks.some((t) => t.id === last.trackId));
-            const idx = folder?.tracks.findIndex((t) => t.id === last.trackId) ?? -1;
-            if (folder && idx >= 0) {
-              const seek = Math.max(0, last.positionSec || 0);
-              await loadQueueToNative(folder.tracks, idx);
-              if (seek > 0) await nativeSeekTo(seek * 1000);
-              await nativePlay();
-            }
-          } catch {}
+      AsyncStorage.setItem(LIBRARY_CACHE_KEY, JSON.stringify(list)).catch(() => {});
+      const validPaths = new Set(list.map((f) => f.path));
+      setRecentFolders((paths) => {
+        const next = paths.filter((p) => validPaths.has(p));
+        if (next.length !== paths.length) persistRecent(next);
+        return next;
+      });
+      setQuickFolderPaths((paths) => {
+        const next = paths.filter((p) => validPaths.has(p));
+        if (next.length !== paths.length) persistQuickFolders(next);
+        return next;
+      });
+      const cachedTrackId = currentIndexRef.current >= 0 ? queueRef.current[currentIndexRef.current]?.id : null;
+      if (cachedTrackId && !list.some((f) => f.tracks.some((t) => t.id === cachedTrackId))) {
+        AsyncStorage.removeItem(NOW_PLAYING_CACHE_KEY).catch(() => {});
+      }
+      const activeFolder = currentFolderPathRef.current
+        ? list.find((f) => f.path === currentFolderPathRef.current)
+          || list.find((f) => normalizeFolderKey(f.path, f.name) === normalizeFolderKey(currentFolderPathRef.current || '', currentFolderPathRef.current?.split('/').pop() || ''))
+        : null;
+      const activeTrack = currentIndexRef.current >= 0 ? queueRef.current[currentIndexRef.current] : null;
+      if (activeFolder && activeTrack) {
+        let nextIndex = activeFolder.tracks.findIndex((t) => t.id === activeTrack.id);
+        if (nextIndex < 0) nextIndex = activeFolder.tracks.findIndex((t) => trackIdentity(t) === trackIdentity(activeTrack));
+        if (nextIndex >= 0) {
+          const nextTrack = activeFolder.tracks[nextIndex];
+          setQueue(activeFolder.tracks);
+          setCurrentFolderPath(activeFolder.path);
+          setCurrentIndex(nextIndex);
+          setDurationSec(nextTrack.duration ?? 0);
+          lastNativeStateRef.current = { ...lastNativeStateRef.current, durationMs: (nextTrack.duration ?? 0) * 1000, currentIndex: nextIndex, lastUpdateMs: Date.now() };
+          AsyncStorage.setItem(NOW_PLAYING_CACHE_KEY, JSON.stringify({
+            folderPath: activeFolder.path,
+            trackId: nextTrack.id,
+            positionSec: Math.max(0, positionSecRef.current || 0),
+            queue: activeFolder.tracks,
+            currentIndex: nextIndex,
+            savedAt: Date.now(),
+          } satisfies CachedNowPlayingState)).catch(() => {});
         }
       }
+      await restoreLastState(list);
       return {
         folderCount: list.length,
         trackCount: list.reduce((sum, f) => sum + f.trackCount, 0),
@@ -468,14 +687,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       console.warn('loadFolders error', e);
       return { folderCount: 0, trackCount: 0 };
     }
-  }, [artworkOverrides, loadQueueToNative]);
+  }, [artworkOverrides, persistQuickFolders, persistRecent, restoreLastState]);
 
   useEffect(() => {
-    if (!storageReady) return;
+    if (!storageReady || folders.length === 0) return;
+    restoreLastState(folders).catch(() => {});
+  }, [folders, restoreLastState, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady || !libraryCacheLoaded) return;
     if (autoLoadedLibraryRef.current) return;
     autoLoadedLibraryRef.current = true;
-    loadFolders().catch(() => {});
-  }, [loadFolders, storageReady]);
+    if (folders.length === 0) loadFolders().catch(() => {});
+  }, [folders.length, libraryCacheLoaded, loadFolders, storageReady]);
 
   const playFolder = useCallback(async (folderPath: string, startIndex = 0) => {
     const f = folders.find((x) => x.path === folderPath);
@@ -497,13 +721,18 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const playQueueIndex = useCallback(async (idx: number) => {
     if (idx < 0 || idx >= queue.length) return;
-    await nativeSeekTo(idx);
-    // Force reload by seeking to the start of the target track
-    const targetId = queue[idx]?.id;
-    if (targetId) {
-      await loadQueueToNative(queue, idx);
+    const track = queue[idx];
+    setCurrentIndex(idx);
+    setPositionSec(0);
+    setDurationSec(track?.duration ?? 0);
+    lastNativeStateRef.current = { positionMs: 0, durationMs: (track?.duration ?? 0) * 1000, isPlaying: true, currentIndex: idx, lastUpdateMs: Date.now() };
+    persistNowPlaying(queue, idx);
+    if (castConnected) {
+      await nativeCastLoadQueue(queue, idx);
+    } else {
+      await nativeSeekToIndex(idx);
     }
-  }, [queue, loadQueueToNative]);
+  }, [castConnected, persistNowPlaying, queue]);
 
   const togglePlay = useCallback(() => {
     if (castConnected) {
@@ -711,6 +940,18 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       positionSec: Math.max(0, positionSec || 0),
     } satisfies LastPlayerState)).catch(() => {});
   }, [currentFolderPath, currentIndex, positionSec, queue]);
+
+  useEffect(() => {
+    if (queue.length === 0 || currentIndex < 0) return;
+    persistNowPlaying(queue, currentIndex);
+  }, [currentFolderPath, currentIndex, persistNowPlaying, queue]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'inactive' || state === 'background') persistNowPlaying();
+    });
+    return () => sub.remove();
+  }, [persistNowPlaying]);
 
   // Handle media actions from notification/widgets
   const handleMediaAction = useCallback((action: string | null | undefined) => {

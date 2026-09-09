@@ -26,6 +26,7 @@
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.WAKE_LOCK",
         "android.permission.FOREGROUND_SERVICE",
+        "android.permission.ACCESS_WIFI_STATE",
         "android.permission.MODIFY_AUDIO_SETTINGS"
       ],
       "package": "com.shuffleimusic.player"

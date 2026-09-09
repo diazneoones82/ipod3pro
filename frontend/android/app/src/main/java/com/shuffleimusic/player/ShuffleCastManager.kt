@@ -103,6 +103,7 @@ class ShuffleCastManager(private val context: Context) {
       remoteMediaClient = session.remoteMediaClient
       remoteMediaClient?.addListener(remoteListener)
       isConnected = true
+      startWebServer()
       listener?.onCastConnected()
     }
 
@@ -174,11 +175,14 @@ class ShuffleCastManager(private val context: Context) {
       val arr = JSONArray(tracksJson)
       if (arr.length() == 0) return
       val startIdx = startIndex.coerceIn(0, arr.length() - 1)
+      webServer?.registerTracks(tracksJson)
 
       val buildItems = mutableListOf<MediaQueueItem>()
       for (i in 0 until arr.length()) {
         val obj = arr.getJSONObject(i)
         val songId = obj.optString("id", "")
+        val uri = obj.optString("uri", "")
+        val filename = obj.optString("filename", "")
         val title = obj.optString("title", obj.optString("filename", "Unknown"))
         val artist = obj.optString("artist", "")
         val album = obj.optString("album", "")
@@ -186,7 +190,7 @@ class ShuffleCastManager(private val context: Context) {
 
         val serverUrl = webServer?.getUrl() ?: continue
         val contentUrl = "$serverUrl/song?id=$songId"
-        val coverUrl = "$serverUrl/coverart?id=${obj.optString("albumId", songId)}"
+        val coverUrl = "$serverUrl/coverart?coverart=${obj.optString("albumId", songId)}"
 
         val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MUSIC_TRACK).apply {
           putString(MediaMetadata.KEY_TITLE, title)
@@ -197,7 +201,7 @@ class ShuffleCastManager(private val context: Context) {
 
         val mediaInfo = MediaInfo.Builder(contentUrl)
           .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
-          .setContentType("audio/mpeg")
+          .setContentType(mimeForMedia(uri, filename))
           .setMetadata(metadata)
           .setStreamDuration(durationMs)
           .build()
@@ -273,4 +277,19 @@ class ShuffleCastManager(private val context: Context) {
   }
 
   fun getCastDeviceName(): String = castSession?.castDevice?.friendlyName ?: ""
+
+  private fun mimeForMedia(uri: String, filename: String): String {
+    val ext = uri.substringBefore('?').substringAfterLast('.', "").ifBlank {
+      filename.substringAfterLast('.', "")
+    }.lowercase()
+    return when (ext) {
+      "mp3" -> "audio/mpeg"
+      "flac" -> "audio/flac"
+      "wav" -> "audio/wav"
+      "ogg", "oga" -> "audio/ogg"
+      "m4a", "aac" -> "audio/mp4"
+      "wma" -> "audio/x-ms-wma"
+      else -> "audio/mpeg"
+    }
+  }
 }

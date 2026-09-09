@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator, FlatList, Modal, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -15,17 +15,8 @@ export default function FoldersScreen() {
   const router = useRouter();
   const player = usePlayer();
   const [loading, setLoading] = useState(false);
-  const [requested, setRequested] = useState(false);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [artRefreshingPath, setArtRefreshingPath] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!requested) {
-      setRequested(true);
-      setLoading(true);
-      player.loadFolders().finally(() => setLoading(false));
-    }
-  }, [requested, player]);
 
   const recent = useMemo(() =>
     player.recentFolders
@@ -50,9 +41,8 @@ export default function FoldersScreen() {
 
   const openAddFolder = async () => {
     if (player.folders.length === 0) {
-      setLoading(true);
-      await player.loadFolders();
-      setLoading(false);
+      Alert.alert('Library', 'Run Rescan device from Settings to refresh folders.');
+      return;
     }
     setFolderPickerOpen(true);
   };

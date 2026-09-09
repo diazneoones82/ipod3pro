@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Platform, Modal, ScrollView, ActivityIndicator, TextInput, FlatList, Linking, Alert, Vibration, Animated, Easing, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
+import { View, Text, StyleSheet, Pressable, Platform, Modal, ScrollView, ActivityIndicator, TextInput, FlatList, Linking, Alert, Vibration, Animated, Easing, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, AppState } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -15,49 +15,17 @@ import WaveformScrubber from '@/src/components/WaveformScrubber';
 import SleepTimerSheet from '@/src/components/SleepTimerSheet';
 import CastButton from '@/src/components/CastButton';
 import { usePlayer, currentTrack, type VisualizerMode } from '@/src/state/PlayerContext';
-import { fetchAlbumArt } from '@/src/utils/api';
-import { cleanToken, trackLookupParts } from '@/src/utils/track-lookup';
+import { lookupAlbumArtUrl, saveAlbumArtUrlForTrack } from '@/src/utils/album-art';
+import { trackLookupParts } from '@/src/utils/track-lookup';
 
 const BG_IMAGE = 'https://images.pexels.com/photos/9807251/pexels-photo-9807251.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940';
 const DEFAULT_ART = 'https://images.unsplash.com/photo-1585838017777-5003198884b5?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzN8MHwxfHNlYXJjaHwxfHx2aW50YWdlJTIwdmlueWwlMjByZWNvcmQlMjBjb3ZlciUyMGFydHxlbnwwfHx8fDE3ODI1MjcxMTZ8MA&ixlib=rb-4.1.0&q=85';
+const BRAND_LOGO_URI = 'data:image/png;base64,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';
 
 const TAB_BAR_HEIGHT = Platform.OS === 'ios' ? 84 : 64;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-function normMatch(text?: string): string {
-  return cleanToken(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-}
-
-function similarity(a?: string, b?: string): number {
-  const aa = normMatch(a);
-  const bb = normMatch(b);
-  if (!aa || !bb) return 0;
-  if (aa === bb) return 1;
-  if (aa.includes(bb) || bb.includes(aa)) return 0.88;
-  const aWords = new Set(aa.split(' '));
-  const bWords = new Set(bb.split(' '));
-  const overlap = [...aWords].filter((word) => bWords.has(word)).length;
-  return overlap / Math.max(aWords.size, bWords.size);
-}
-
-function durationScore(candidateMs?: number, targetSec?: number): number {
-  if (!candidateMs || !targetSec) return 0;
-  const diff = Math.abs(candidateMs / 1000 - targetSec);
-  if (diff <= 2) return 1;
-  if (diff <= 6) return 0.75;
-  if (diff <= 12) return 0.35;
-  return -0.25;
-}
-
-function scoreCandidate(candidate: { title?: string; artist?: string; album?: string; durationMs?: number }, expected: { title: string; artist?: string; album?: string; duration?: number }): number {
-  let score = similarity(candidate.title, expected.title) * 0.54;
-  score += expected.artist ? similarity(candidate.artist, expected.artist) * 0.30 : 0.08;
-  score += expected.album ? similarity(candidate.album, expected.album) * 0.10 : 0.04;
-  score += durationScore(candidate.durationMs, expected.duration) * 0.08;
-  return score;
 }
 
 function fmtTime(sec: number): string {
@@ -189,6 +157,9 @@ export default function PlayerScreen() {
   const [artLoading, setArtLoading] = useState(false);
   const scrollX = useRef(new Animated.Value(0)).current;
   const carouselRef = useRef<any>(null);
+  const scrollingProgrammatically = useRef(false);
+  const resumeIndexRef = useRef(player.currentIndex);
+  resumeIndexRef.current = player.currentIndex;
 
   const isExpandedWindow = windowWidth >= 600;
   const horizontalPadding = isExpandedWindow ? 28 : SPACING.lg;
@@ -220,11 +191,33 @@ export default function PlayerScreen() {
     if (player.currentIndex >= 0) setSelectedIndex(player.currentIndex);
   }, [player.currentIndex]);
 
+  // Scroll carousel on user-initiated track changes (debounced to avoid state-restoration flicker)
   useEffect(() => {
-    if (player.currentIndex >= 0 && carouselRef.current) {
-      carouselRef.current.scrollToIndex({ index: player.currentIndex, animated: true });
-    }
+    if (player.currentIndex < 0 || !carouselRef.current) return;
+    const timer = setTimeout(() => {
+      if (carouselRef.current) {
+        scrollingProgrammatically.current = true;
+        carouselRef.current.scrollToIndex({ index: player.currentIndex, animated: true });
+        setTimeout(() => { scrollingProgrammatically.current = false; }, 400);
+      }
+    }, 80);
+    return () => clearTimeout(timer);
   }, [player.currentIndex]);
+
+  // Scroll carousel on app resume (stable listener — never re-created)
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        const idx = resumeIndexRef.current;
+        if (idx >= 0 && carouselRef.current) {
+          scrollingProgrammatically.current = true;
+          carouselRef.current.scrollToIndex({ index: idx, animated: false });
+          setTimeout(() => { scrollingProgrammatically.current = false; }, 200);
+        }
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   const pulse = useCallback(() => {
     const strength = Math.max(0, Math.min(100, player.wheelHapticStrength));
@@ -383,36 +376,14 @@ export default function PlayerScreen() {
     if (!track || !lyricQuery || artLoading) return;
     setArtLoading(true);
     try {
-      let url = '';
-      try {
-        const found = await fetchAlbumArt({ track: lyricQuery, artist: lyricArtist, album: lyricAlbum, duration: track.duration });
-        url = found.artworkUrl;
-      } catch {
-        const term = [lyricArtist, lyricQuery, lyricAlbum].filter(Boolean).join(' ');
-        const res = await fetch(`https://itunes.apple.com/search?media=music&entity=song&limit=15&country=US&term=${encodeURIComponent(term)}`);
-        const json = await res.json();
-        const best = Array.isArray(json?.results)
-          ? json.results
-              .map((item: any) => ({
-                item,
-                score: scoreCandidate(
-                  { title: item?.trackName, artist: item?.artistName, album: item?.collectionName, durationMs: item?.trackTimeMillis },
-                  { title: lyricQuery, artist: lyricArtist, album: lyricAlbum, duration: track.duration },
-                ),
-              }))
-              .sort((a: any, b: any) => b.score - a.score)
-              .find((entry: any) => entry.score >= (lyricArtist && lyricAlbum ? 0.76 : lyricArtist ? 0.70 : 0.58))
-          : null;
-        url = best?.item?.artworkUrl100 ? String(best.item.artworkUrl100).replace(/100x100bb\.(jpg|png)$/i, '1200x1200bb.$1') : '';
-      }
+      const url = await lookupAlbumArtUrl({ title: lyricQuery, artist: lyricArtist, album: lyricAlbum, duration: track.duration });
       if (!url) throw new Error('No artwork');
       const root = FileSystem.documentDirectory || FileSystem.cacheDirectory;
       if (!root) throw new Error('Storage unavailable');
       const dir = `${root}album-art/`;
-      await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
-      const dest = `${dir}${track.id.replace(/[^a-z0-9_-]+/gi, '_')}.jpg`;
-      const result = await FileSystem.downloadAsync(url, dest);
-      player.setTrackArtwork(track.id, result.uri, track);
+      const savedUri = await saveAlbumArtUrlForTrack(url, track, dir);
+      if (!savedUri) throw new Error('Could not save artwork');
+      player.setTrackArtwork(track.id, savedUri, track);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch {
       Alert.alert('Album art', 'No internet album art found for this song.');
@@ -500,7 +471,6 @@ export default function PlayerScreen() {
         <View style={styles.header}>
           <View style={styles.brandRow}>
             <Image source={require('@/assets/images/shuffle-music-logo.png')} style={styles.brandLogo} contentFit="cover" />
-            <Text style={styles.brand} numberOfLines={1}>Shuffle MuSic</Text>
           </View>
           <View style={styles.headerRight}>
             <Pressable
@@ -565,6 +535,7 @@ export default function PlayerScreen() {
             )}
             scrollEventThrottle={16}
             onMomentumScrollEnd={(e) => {
+              if (scrollingProgrammatically.current) return;
               const idx = Math.round(e.nativeEvent.contentOffset.x / (artSize + 8));
               if (idx >= 0 && idx < player.queue.length && idx !== player.currentIndex) {
                 player.playQueueIndex(idx);

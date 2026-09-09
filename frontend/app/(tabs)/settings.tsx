@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, Switch, Linking, Alert, Platform } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, Pressable, ScrollView, Switch, Linking, Alert, Platform, TextInput } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -10,7 +10,7 @@ import { useEQ } from '@/src/state/EQContext';
 import SleepTimerSheet from '@/src/components/SleepTimerSheet';
 import CustomSlider from '@/src/components/CustomSlider';
 import { exportDiscoveredEqPresets, type EqPresetExportProgress } from '@/src/utils/export-eq-presets';
-import { pullAlbumArtForFolder } from '@/src/utils/album-art';
+import { getYouTubeAlbumArtApiKey, pullAlbumArtForFolder, setYouTubeAlbumArtApiKey } from '@/src/utils/album-art';
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -23,6 +23,11 @@ export default function SettingsScreen() {
   const [exportProgress, setExportProgress] = useState<EqPresetExportProgress | null>(null);
   const [downloadingAllArt, setDownloadingAllArt] = useState(false);
   const [albumArtProgress, setAlbumArtProgress] = useState<{ folder: number; total: number; updated: number; checked: number } | null>(null);
+  const [youtubeKey, setYoutubeKey] = useState('');
+
+  useEffect(() => {
+    getYouTubeAlbumArtApiKey().then(setYoutubeKey).catch(() => {});
+  }, []);
 
   const sleepLabel = player.sleepRemainingSec != null
     ? `${Math.floor(player.sleepRemainingSec / 60)}:${String(player.sleepRemainingSec % 60).padStart(2, '0')} remaining`
@@ -68,6 +73,7 @@ export default function SettingsScreen() {
     setDownloadingAllArt(true);
     setAlbumArtProgress({ folder: 0, total: player.folders.length, updated: 0, checked: 0 });
     try {
+      await setYouTubeAlbumArtApiKey(youtubeKey);
       let folders = player.folders;
       if (folders.length === 0) {
         await player.loadFolders();
@@ -94,6 +100,11 @@ export default function SettingsScreen() {
       setDownloadingAllArt(false);
       setAlbumArtProgress(null);
     }
+  };
+
+  const handleSaveYoutubeKey = async () => {
+    await setYouTubeAlbumArtApiKey(youtubeKey);
+    Alert.alert('YouTube artwork', youtubeKey.trim() ? 'API key saved.' : 'API key cleared.');
   };
 
   const handleBatteryOptimization = async () => {
@@ -273,6 +284,29 @@ export default function SettingsScreen() {
           <Ionicons name="chevron-forward" size={18} color={COLORS.onSurfaceTertiary} />
         </Pressable>
 
+        <View style={styles.row} testID="setting-youtube-api-key">
+          <View style={styles.iconBox}><Ionicons name="logo-youtube" size={18} color={COLORS.brand} /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rowTitle}>YouTube artwork key</Text>
+            <TextInput
+              value={youtubeKey}
+              onChangeText={(text) => {
+                setYoutubeKey(text);
+                setYouTubeAlbumArtApiKey(text).catch(() => {});
+              }}
+              placeholder="API key"
+              placeholderTextColor={COLORS.onSurfaceTertiary}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+              style={styles.input}
+            />
+          </View>
+          <Pressable onPress={handleSaveYoutubeKey} style={styles.smallButton} testID="setting-save-youtube-api-key">
+            <Text style={styles.smallButtonText}>Save</Text>
+          </Pressable>
+        </View>
+
         <Pressable
           onPress={handleDownloadAllAlbumArt}
           disabled={downloadingAllArt}
@@ -343,4 +377,7 @@ const styles = StyleSheet.create({
   iconBox: { width: 36, height: 36, borderRadius: 10, backgroundColor: COLORS.brandTertiary, alignItems: 'center', justifyContent: 'center' },
   rowTitle: { color: COLORS.onSurface, fontSize: 14, fontWeight: '600' },
   rowMeta: { color: COLORS.onSurfaceTertiary, fontSize: 11, marginTop: 2 },
+  input: { color: COLORS.onSurface, borderBottomWidth: 1, borderBottomColor: COLORS.border, paddingVertical: 4, marginTop: 4, fontSize: 13 },
+  smallButton: { backgroundColor: COLORS.brand, borderRadius: RADIUS.sm, paddingHorizontal: 14, paddingVertical: 9 },
+  smallButtonText: { color: COLORS.onBrandPrimary, fontWeight: '900', fontSize: 12 },
 });

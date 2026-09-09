@@ -26,6 +26,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.facebook.react.bridge.Arguments
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class ShufflePlayerService : MediaBrowserServiceCompat() {
   private var castManager: ShuffleCastManager? = null
@@ -44,6 +46,7 @@ class ShufflePlayerService : MediaBrowserServiceCompat() {
     const val ACTION_TOGGLE = "toggle"
     const val ACTION_NEXT = "next"
     const val ACTION_PREVIOUS = "previous"
+    const val ACTION_SEEK_TO_INDEX = "seek_to_index"
     const val ACTION_SEEK_TO = "seek_to"
     const val ACTION_SET_REPEAT_MODE = "set_repeat"
     const val ACTION_SET_SHUFFLE = "set_shuffle"
@@ -58,13 +61,16 @@ class ShufflePlayerService : MediaBrowserServiceCompat() {
     const val ACTION_CAST_TOGGLE = "cast_toggle"
 
     const val EXTRA_TRACKS = "tracks"
+    const val EXTRA_TRACKS_REF = "tracks_ref"
     const val EXTRA_START_INDEX = "start_index"
     const val EXTRA_POSITION_MS = "position_ms"
+    const val EXTRA_QUEUE_INDEX = "queue_index"
     const val EXTRA_REPEAT_MODE = "repeat_mode"
     const val EXTRA_SHUFFLE_ENABLED = "shuffle_enabled"
     const val EXTRA_VOLUME = "volume"
     const val EXTRA_GAPLESS_ENABLED = "gapless_enabled"
     const val EXTRA_CAST_TRACKS = "cast_tracks"
+    const val EXTRA_CAST_TRACKS_REF = "cast_tracks_ref"
     const val EXTRA_CAST_START_INDEX = "cast_start_index"
 
     const val EVENT_PLAYBACK_STATE = "ShufflePlaybackState"
@@ -79,6 +85,7 @@ class ShufflePlayerService : MediaBrowserServiceCompat() {
 
     private var serviceInstance: ShufflePlayerService? = null
     private var reactEventContext: com.facebook.react.bridge.ReactApplicationContext? = null
+    private val pendingQueues = ConcurrentHashMap<String, String>()
 
     fun setReactEventContext(ctx: com.facebook.react.bridge.ReactApplicationContext?) {
       reactEventContext = ctx
@@ -105,6 +112,17 @@ class ShufflePlayerService : MediaBrowserServiceCompat() {
     }
 
     fun getExoPlayer(): androidx.media3.exoplayer.ExoPlayer? = serviceInstance?.exoPlayer
+
+    fun putPendingQueue(tracksJson: String): String {
+      val token = UUID.randomUUID().toString()
+      pendingQueues[token] = tracksJson
+      return token
+    }
+
+    private fun takePendingQueue(token: String?): String? {
+      if (token.isNullOrBlank()) return null
+      return pendingQueues.remove(token)
+    }
   }
 
   private var exoPlayer: ExoPlayer? = null
@@ -389,7 +407,9 @@ class ShufflePlayerService : MediaBrowserServiceCompat() {
     when (intent.action) {
       ACTION_INIT -> { ensureNotification(false) }
       ACTION_LOAD_QUEUE -> {
-        val tracksJson = intent.getStringExtra(EXTRA_TRACKS) ?: return
+        val tracksJson = intent.getStringExtra(EXTRA_TRACKS)
+          ?: takePendingQueue(intent.getStringExtra(EXTRA_TRACKS_REF))
+          ?: return
         val startIndex = intent.getIntExtra(EXTRA_START_INDEX, 0)
         loadQueue(tracksJson, startIndex)
       }
@@ -413,6 +433,26 @@ class ShufflePlayerService : MediaBrowserServiceCompat() {
       ACTION_PREVIOUS -> {
         if (castActive) castManager?.previous() else exoPlayer?.seekToPrevious()
       }
+      ACTION_SEEK_TO_INDEX -> {
+        val idx = intent.getIntExtra(EXTRA_QUEUE_INDEX, -1)
+        if (idx in tracks.indices) {
+          if (castActive) {
+            castManager?.loadMedia(JSONArray(tracks.map {
+              JSONObject()
+                .put("id", it.id)
+                .put("uri", it.uri)
+                .put("title", it.title)
+                .put("artist", it.artist)
+                .put("album", it.album)
+                .put("duration", it.durationMs / 1000.0)
+                .put("artworkUri", it.artworkUri ?: "")
+            }).toString(), idx, 0)
+          } else {
+            exoPlayer?.seekTo(idx, C.TIME_UNSET)
+            exoPlayer?.play()
+          }
+        }
+      }
       ACTION_SEEK_TO -> {
         if (castActive) {
           castManager?.seekTo(intent.getLongExtra(EXTRA_POSITION_MS, 0))
@@ -434,7 +474,9 @@ class ShufflePlayerService : MediaBrowserServiceCompat() {
         exoPlayer?.volume = intent.getFloatExtra(EXTRA_VOLUME, 1f).coerceIn(0f, 1f)
       }
       ACTION_CAST_LOAD -> {
-        val tracksJson = intent.getStringExtra(EXTRA_CAST_TRACKS) ?: return
+        val tracksJson = intent.getStringExtra(EXTRA_CAST_TRACKS)
+          ?: takePendingQueue(intent.getStringExtra(EXTRA_CAST_TRACKS_REF))
+          ?: return
         val startIndex = intent.getIntExtra(EXTRA_CAST_START_INDEX, 0)
         val positionMs = exoPlayer?.currentPosition ?: 0L
         if (castActive) {

@@ -205,6 +205,7 @@ type NativeShufflePlayer = {
   togglePlay(): Promise<boolean>;
   next(): Promise<boolean>;
   previous(): Promise<boolean>;
+  seekToIndex(index: number): Promise<boolean>;
   seekTo(positionMs: number): Promise<boolean>;
   stopPlayback(): Promise<boolean>;
   setRepeatMode(repeatMode: number): Promise<boolean>;
@@ -266,6 +267,11 @@ export async function nativeNext() {
 export async function nativePrevious() {
   if (!playerAvailable()) return false;
   try { return !!(await playerRef!.previous()); } catch { return false; }
+}
+
+export async function nativeSeekToIndex(index: number) {
+  if (!playerAvailable()) return false;
+  try { return !!(await playerRef!.seekToIndex(index)); } catch { return false; }
 }
 
 export async function nativeSeekTo(positionMs: number) {
